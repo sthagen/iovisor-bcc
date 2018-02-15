@@ -15,15 +15,16 @@
  */
 
 #include <inttypes.h>
+#include <linux/perf_event.h>
 #include <poll.h>
-#include <stdio.h>
+#include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <unistd.h>
-#include <linux/perf_event.h>
 
 #include "libbpf.h"
 #include "perf_reader.h"
@@ -67,10 +68,13 @@ struct perf_reader * perf_reader_new(perf_reader_cb cb,
   return reader;
 }
 
-void perf_reader_free(void *ptr) {
+void perf_reader_free(void *ptr, bool is_exit) {
   if (ptr) {
     struct perf_reader *reader = ptr;
-    while (!__sync_bool_compare_and_swap(&reader->rb_use_state, RB_NOT_USED, RB_USED_IN_MUNMAP));
+    if (!is_exit)
+      while (!__sync_bool_compare_and_swap(&reader->rb_use_state, RB_NOT_USED,
+                                           RB_USED_IN_MUNMAP))
+        ;
     munmap(reader->base, reader->page_size * (reader->page_cnt + 1));
     if (reader->fd >= 0) {
       ioctl(reader->fd, PERF_EVENT_IOC_DISABLE, 0);

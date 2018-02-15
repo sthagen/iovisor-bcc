@@ -496,7 +496,7 @@ class PerfEventArray(ArrayBase):
         key_id = (id(self), key)
         if key_id in self.bpf.open_kprobes:
             # The key is opened for perf ring buffer
-            lib.perf_reader_free(self.bpf.open_kprobes[key_id])
+            lib.perf_reader_free(self.bpf.open_kprobes[key_id], self.bpf.is_exit)
             self.bpf._del_kprobe(key_id)
             del self._cbs[key]
         else:

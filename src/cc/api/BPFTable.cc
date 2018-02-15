@@ -159,7 +159,7 @@ StatusTuple BPFPerfBuffer::open_on_cpu(perf_reader_raw_cb cb,
 
   int reader_fd = perf_reader_fd(reader);
   if (!update(&cpu, &reader_fd)) {
-    perf_reader_free(static_cast<void*>(reader));
+    perf_reader_free(static_cast<void*>(reader), false);
     return StatusTuple(-1, "Unable to open perf buffer on CPU %d: %s", cpu,
                        std::strerror(errno));
   }
@@ -168,7 +168,7 @@ StatusTuple BPFPerfBuffer::open_on_cpu(perf_reader_raw_cb cb,
   event.events = EPOLLIN;
   event.data.ptr = static_cast<void*>(reader);
   if (epoll_ctl(epfd_, EPOLL_CTL_ADD, reader_fd, &event) != 0) {
-    perf_reader_free(static_cast<void*>(reader));
+    perf_reader_free(static_cast<void*>(reader), false);
     return StatusTuple(-1, "Unable to add perf_reader FD to epoll: %s",
                        std::strerror(errno));
   }
@@ -201,7 +201,7 @@ StatusTuple BPFPerfBuffer::close_on_cpu(int cpu) {
   auto it = cpu_readers_.find(cpu);
   if (it == cpu_readers_.end())
     return StatusTuple(0);
-  perf_reader_free(static_cast<void*>(it->second));
+  perf_reader_free(static_cast<void*>(it->second), false);
   if (!remove(const_cast<int*>(&(it->first))))
     return StatusTuple(-1, "Unable to close perf buffer on CPU %d", it->first);
   cpu_readers_.erase(it);

@@ -829,7 +829,7 @@ void *bpf_attach_kprobe(int progfd, enum bpf_probe_attach_type attach_type,
   return reader;
 
 error:
-  perf_reader_free(reader);
+  perf_reader_free(reader, false);
   return NULL;
 
 }
@@ -954,7 +954,7 @@ error:
   if (kfd >= 0)
     close(kfd);
   exit_mount_ns(ns_fd);
-  perf_reader_free(reader);
+  perf_reader_free(reader, false);
   return NULL;
 }
 
@@ -1054,7 +1054,7 @@ void *bpf_attach_tracepoint(int progfd, const char *tp_category,
   return reader;
 
 error:
-  perf_reader_free(reader);
+  perf_reader_free(reader, false);
   return NULL;
 }
 
@@ -1100,7 +1100,7 @@ void * bpf_open_perf_buffer(perf_reader_raw_cb raw_cb,
 
 error:
   if (reader)
-    perf_reader_free(reader);
+    perf_reader_free(reader, false);
 
   return NULL;
 }

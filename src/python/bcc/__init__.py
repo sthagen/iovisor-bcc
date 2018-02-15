@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from __future__ import print_function
+from functools import partial
 import atexit
 import ctypes as ct
 import fcntl
@@ -269,7 +270,7 @@ class BPF(object):
         self.open_tracepoints = {}
         self.open_perf_events = {}
         self.tracefile = None
-        atexit.register(self.cleanup)
+        atexit.register(partial(self.cleanup, True))
 
         self._reader_cb_impl = _CB_TYPE(BPF._reader_cb)
         self._user_cb = cb
@@ -277,6 +278,7 @@ class BPF(object):
         self.funcs = {}
         self.tables = {}
         self.module = None
+        self.is_exit = False
         cflags_array = (ct.c_char_p * len(cflags))()
         for i, s in enumerate(cflags): cflags_array[i] = bytes(ArgString(s))
         if text:
@@ -542,7 +544,7 @@ class BPF(object):
         ev_name = b"p_" + event.replace(b"+", b"_").replace(b".", b"_")
         if ev_name not in self.open_kprobes:
             raise Exception("Kprobe %s is not attached" % event)
-        lib.perf_reader_free(self.open_kprobes[ev_name])
+        lib.perf_reader_free(self.open_kprobes[ev_name], False)
         res = lib.bpf_detach_kprobe(ev_name)
         if res < 0:
             raise Exception("Failed to detach BPF from kprobe")
@@ -579,7 +581,7 @@ class BPF(object):
         ev_name = b"r_" + event.replace(b"+", b"_").replace(b".", b"_")
         if ev_name not in self.open_kprobes:
             raise Exception("Kretprobe %s is not attached" % event)
-        lib.perf_reader_free(self.open_kprobes[ev_name])
+        lib.perf_reader_free(self.open_kprobes[ev_name], False)
         res = lib.bpf_detach_kprobe(ev_name)
         if res < 0:
             raise Exception("Failed to detach BPF from kprobe")
@@ -719,7 +721,7 @@ class BPF(object):
         tp = _assert_is_bytes(tp)
         if tp not in self.open_tracepoints:
             raise Exception("Tracepoint %s is not attached" % tp)
-        lib.perf_reader_free(self.open_tracepoints[tp])
+        lib.perf_reader_free(self.open_tracepoints[tp], False)
         (tp_category, tp_name) = tp.split(b':')
         res = lib.bpf_detach_tracepoint(tp_category, tp_name)
         if res < 0:
@@ -876,7 +878,7 @@ class BPF(object):
         ev_name = self._get_uprobe_evname(b"p", path, addr, pid)
         if ev_name not in self.open_uprobes:
             raise Exception("Uprobe %s is not attached" % ev_name)
-        lib.perf_reader_free(self.open_uprobes[ev_name])
+        lib.perf_reader_free(self.open_uprobes[ev_name], False)
         res = lib.bpf_detach_uprobe(ev_name)
         if res < 0:
             raise Exception("Failed to detach BPF from uprobe")
@@ -930,7 +932,7 @@ class BPF(object):
         ev_name = self._get_uprobe_evname(b"r", path, addr, pid)
         if ev_name not in self.open_uprobes:
             raise Exception("Uretprobe %s is not attached" % ev_name)
-        lib.perf_reader_free(self.open_uprobes[ev_name])
+        lib.perf_reader_free(self.open_uprobes[ev_name], False)
         res = lib.bpf_detach_uprobe(ev_name)
         if res < 0:
             raise Exception("Failed to detach BPF from uprobe")
@@ -1135,11 +1137,13 @@ class BPF(object):
     def donothing(self):
         """the do nothing exit handler"""
 
-    def cleanup(self):
+    def cleanup(self, is_exit = False):
+        if is_exit:
+            self.is_exit = True
         for k, v in list(self.open_kprobes.items()):
             # non-string keys here include the perf_events reader
             if isinstance(k, bytes):
-                lib.perf_reader_free(v)
+                lib.perf_reader_free(v, is_exit)
                 lib.bpf_detach_kprobe(bytes(k))
                 self._del_kprobe(k)
         # clean up opened perf ring buffer and perf events
@@ -1148,11 +1152,11 @@ class BPF(object):
             if isinstance(self.tables[key], PerfEventArray):
                 del self.tables[key]
         for k, v in list(self.open_uprobes.items()):
-            lib.perf_reader_free(v)
+            lib.perf_reader_free(v, is_exit)
             lib.bpf_detach_uprobe(bytes(k))
             self._del_uprobe(k)
         for k, v in self.open_tracepoints.items():
-            lib.perf_reader_free(v)
+            lib.perf_reader_free(v, is_exit)
             (tp_category, tp_name) = k.split(b':')
             lib.bpf_detach_tracepoint(tp_category, tp_name)
         self.open_tracepoints.clear()

@@ -559,7 +559,7 @@ std::string BPF::get_uprobe_event(const std::string& binary_path,
 StatusTuple BPF::detach_kprobe_event(const std::string& event,
                                      open_probe_t& attr) {
   if (attr.reader_ptr) {
-    perf_reader_free(attr.reader_ptr);
+    perf_reader_free(attr.reader_ptr, false);
     attr.reader_ptr = nullptr;
   }
   TRY2(unload_func(attr.func));
@@ -571,7 +571,7 @@ StatusTuple BPF::detach_kprobe_event(const std::string& event,
 StatusTuple BPF::detach_uprobe_event(const std::string& event,
                                      open_probe_t& attr) {
   if (attr.reader_ptr) {
-    perf_reader_free(attr.reader_ptr);
+    perf_reader_free(attr.reader_ptr, false);
     attr.reader_ptr = nullptr;
   }
   TRY2(unload_func(attr.func));
@@ -583,7 +583,7 @@ StatusTuple BPF::detach_uprobe_event(const std::string& event,
 StatusTuple BPF::detach_tracepoint_event(const std::string& tracepoint,
                                          open_probe_t& attr) {
   if (attr.reader_ptr) {
-    perf_reader_free(attr.reader_ptr);
+    perf_reader_free(attr.reader_ptr, false);
     attr.reader_ptr = nullptr;
   }
   TRY2(unload_func(attr.func));
