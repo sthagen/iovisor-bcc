@@ -22,14 +22,20 @@ import re
 import struct
 import errno
 import sys
-basestring = (unicode if sys.version_info[0] < 3 else str)
 
-from .libbcc import lib, _CB_TYPE, bcc_symbol, bcc_symbol_option, _SYM_CB_TYPE
+from .libbcc import lib, bcc_symbol, bcc_symbol_option, bcc_stacktrace_build_id, _SYM_CB_TYPE
 from .table import Table, PerfEventArray
 from .perf import Perf
 from .utils import get_online_cpus, printb, _assert_is_bytes, ArgString
+from .version import __version__
+from .disassembler import disassemble_prog, decode_map
 
-_kprobe_limit = 1000
+try:
+    basestring
+except NameError:  # Python 3
+    basestring = str
+
+_probe_limit = 1000
 _num_open_probes = 0
 
 # for tests
@@ -49,8 +55,10 @@ DEBUG_BPF = 0x2
 DEBUG_PREPROCESSOR = 0x4
 # Debug output ASM instructions embedded with source.
 DEBUG_SOURCE = 0x8
-#Debug output register state on all instructions in addition to DEBUG_BPF.
+# Debug output register state on all instructions in addition to DEBUG_BPF.
 DEBUG_BPF_REGISTER_STATE = 0x10
+# Debug BTF.
+DEBUG_BTF = 0x20
 
 class SymbolCache(object):
     def __init__(self, pid):
@@ -67,6 +75,7 @@ class SymbolCache(object):
         module. If we don't even know the module, return the absolute
         address as the offset.
         """
+
         sym = bcc_symbol()
         if demangle:
             res = lib.bcc_symcache_resolve(self.cache, addr, ct.byref(sym))
@@ -93,6 +102,7 @@ class SymbolCache(object):
                 ct.byref(addr)) < 0:
             return -1
         return addr.value
+
 
 class PerfType:
     # From perf_type_id in uapi/linux/perf_event.h
@@ -135,15 +145,28 @@ class BPF(object):
     TRACEPOINT = 5
     XDP = 6
     PERF_EVENT = 7
+    CGROUP_SKB = 8
+    CGROUP_SOCK = 9
+    LWT_IN = 10
+    LWT_OUT = 11
+    LWT_XMIT = 12
+    SOCK_OPS = 13
+    SK_SKB = 14
+    CGROUP_DEVICE = 15
+    SK_MSG = 16
+    RAW_TRACEPOINT = 17
+    CGROUP_SOCK_ADDR = 18
 
     # from xdp_action uapi/linux/bpf.h
     XDP_ABORTED = 0
     XDP_DROP = 1
     XDP_PASS = 2
     XDP_TX = 3
+    XDP_REDIRECT = 4
 
     _probe_repl = re.compile(b"[^a-zA-Z0-9_]")
     _sym_caches = {}
+    _bsymcache =  lib.bcc_buildsymcache_new()
 
     _auto_includes = {
         "linux/time.h": ["time"],
@@ -152,6 +175,14 @@ class BPF(object):
         "linux/slab.h": ["alloc"],
         "linux/netdevice.h": ["sk_buff", "net_device"]
     }
+
+    _syscall_prefixes = [
+        b"sys_",
+        b"__x64_sys_",
+        b"__x32_compat_sys_",
+        b"__ia32_compat_sys_",
+        b"__arm64_sys_",
+    ]
 
     # BPF timestamps come from the monotonic clock. To be able to filter
     # and compare them from Python, we need to invoke clock_gettime.
@@ -208,7 +239,7 @@ class BPF(object):
         if filename:
             if not os.path.isfile(filename):
                 argv0 = ArgString(sys.argv[0])
-                t = b"/".join([os.path.abspath(os.path.dirname(argv0)), filename])
+                t = b"/".join([os.path.abspath(os.path.dirname(argv0.__str__())), filename])
                 if os.path.isfile(t):
                     filename = t
                 else:
@@ -244,8 +275,8 @@ class BPF(object):
                     return exe_file
         return None
 
-    def __init__(self, src_file=b"", hdr_file=b"", text=None, cb=None, debug=0,
-            cflags=[], usdt_contexts=[]):
+    def __init__(self, src_file=b"", hdr_file=b"", text=None, debug=0,
+            cflags=[], usdt_contexts=[], allow_rlimit=True, device=None):
         """Create a new BPF module with the given source code.
 
         Note:
@@ -264,22 +295,38 @@ class BPF(object):
         hdr_file = _assert_is_bytes(hdr_file)
         text = _assert_is_bytes(text)
 
-        self.open_kprobes = {}
-        self.open_uprobes = {}
-        self.open_tracepoints = {}
+        assert not (text and src_file)
+
+        self.kprobe_fds = {}
+        self.uprobe_fds = {}
+        self.tracepoint_fds = {}
+        self.raw_tracepoint_fds = {}
+        self.perf_buffers = {}
         self.open_perf_events = {}
         self.tracefile = None
         atexit.register(self.cleanup)
 
-        self._reader_cb_impl = _CB_TYPE(BPF._reader_cb)
-        self._user_cb = cb
         self.debug = debug
         self.funcs = {}
         self.tables = {}
         self.module = None
         cflags_array = (ct.c_char_p * len(cflags))()
         for i, s in enumerate(cflags): cflags_array[i] = bytes(ArgString(s))
-        if text:
+
+        if src_file:
+            src_file = BPF._find_file(src_file)
+            hdr_file = BPF._find_file(hdr_file)
+
+        # files that end in ".b" are treated as B files. Everything else is a (BPF-)C file
+        if src_file.endswith(b".b"):
+            self.module = lib.bpf_module_create_b(src_file, hdr_file, self.debug, device)
+        else:
+            if src_file:
+                # Read the BPF C source file into the text variable. This ensures,
+                # that files and inline text are treated equally.
+                with open(src_file, mode="rb") as file:
+                    text = file.read()
+
             ctx_array = (ct.c_void_p * len(usdt_contexts))()
             for i, usdt in enumerate(usdt_contexts):
                 ctx_array[i] = ct.c_void_p(usdt.get_context())
@@ -291,27 +338,19 @@ class BPF(object):
                                 "locations")
             text = usdt_text + text
 
-        if text:
+
             self.module = lib.bpf_module_create_c_from_string(text,
-                    self.debug, cflags_array, len(cflags_array))
-            if not self.module:
-                raise Exception("Failed to compile BPF text:\n%s" % text)
-        else:
-            src_file = BPF._find_file(src_file)
-            hdr_file = BPF._find_file(hdr_file)
-            if src_file.endswith(b".b"):
-                self.module = lib.bpf_module_create_b(src_file, hdr_file,
-                        self.debug)
-            else:
-                self.module = lib.bpf_module_create_c(src_file, self.debug,
-                        cflags_array, len(cflags_array))
-            if not self.module:
-                raise Exception("Failed to compile BPF module %s" % src_file)
+                                                              self.debug,
+                                                              cflags_array, len(cflags_array),
+                                                              allow_rlimit, device)
+        if not self.module:
+            raise Exception("Failed to compile BPF module %s" % (src_file or "<text>"))
 
         for usdt_context in usdt_contexts:
             usdt_context.attach_uprobes(self)
 
-        # If any "kprobe__" or "tracepoint__" prefixed functions were defined,
+        # If any "kprobe__" or "tracepoint__" or "raw_tracepoint__"
+        # prefixed functions were defined,
         # they will be loaded and attached here.
         self._trace_autoload()
 
@@ -328,7 +367,7 @@ class BPF(object):
 
         return fns
 
-    def load_func(self, func_name, prog_type):
+    def load_func(self, func_name, prog_type, device = None):
         func_name = _assert_is_bytes(func_name)
         if func_name in self.funcs:
             return self.funcs[func_name]
@@ -339,17 +378,17 @@ class BPF(object):
             log_level = 2
         elif (self.debug & DEBUG_BPF):
             log_level = 1
-        fd = lib.bpf_prog_load(prog_type, func_name,
+        fd = lib.bcc_func_load(self.module, prog_type, func_name,
                 lib.bpf_function_start(self.module, func_name),
                 lib.bpf_function_size(self.module, func_name),
                 lib.bpf_module_license(self.module),
                 lib.bpf_module_kern_version(self.module),
-                log_level, None, 0);
+                log_level, None, 0, device);
 
         if fd < 0:
             atexit.register(self.donothing)
             if ct.get_errno() == errno.EPERM:
-                raise Exception("Need super-user privilges to run")
+                raise Exception("Need super-user privileges to run")
 
             errstr = os.strerror(ct.get_errno())
             raise Exception("Failed to load BPF program %s: %s" %
@@ -371,6 +410,15 @@ class BPF(object):
         start, = lib.bpf_function_start(self.module, func_name),
         size, = lib.bpf_function_size(self.module, func_name),
         return ct.string_at(start, size)
+
+    def disassemble_func(self, func_name):
+        bpfstr = self.dump_func(func_name)
+        return disassemble_prog(func_name, bpfstr)
+
+    def decode_table(self, table_name, sizeinfo=False):
+        table_obj = self[table_name]
+        table_type = lib.bpf_table_type_id(self.module, table_obj.map_id)
+        return decode_map(table_name, table_obj, table_type, sizeinfo=sizeinfo)
 
     str2ctype = {
         u"_Bool": ct.c_bool,
@@ -406,7 +454,8 @@ class BPF(object):
                 elif isinstance(t[2], int):
                     fields.append((t[0], BPF._decode_table_type(t[1]), t[2]))
                 elif isinstance(t[2], basestring) and (
-                        t[2] == u"union" or t[2] == u"struct"):
+                        t[2] == u"union" or t[2] == u"struct" or
+                        t[2] == u"struct_packed"):
                     name = t[0]
                     if name == "":
                         name = "__anon%d" % len(anon)
@@ -417,13 +466,21 @@ class BPF(object):
             else:
                 raise Exception("Failed to decode type %s" % str(t))
         base = ct.Structure
+        is_packed = False
         if len(desc) > 2:
             if desc[2] == u"union":
                 base = ct.Union
             elif desc[2] == u"struct":
                 base = ct.Structure
-        cls = type(str(desc[0]), (base,), dict(_anonymous_=anon,
-            _fields_=fields))
+            elif desc[2] == u"struct_packed":
+                base = ct.Structure
+                is_packed = True
+        if is_packed:
+            cls = type(str(desc[0]), (base,), dict(_anonymous_=anon, _pack_=1,
+                _fields_=fields))
+        else:
+            cls = type(str(desc[0]), (base,), dict(_anonymous_=anon,
+                _fields_=fields))
         return cls
 
     def get_table(self, name, keytype=None, leaftype=None, reducer=None):
@@ -433,16 +490,16 @@ class BPF(object):
         if map_fd < 0:
             raise KeyError
         if not keytype:
-            key_desc = lib.bpf_table_key_desc(self.module, name)
+            key_desc = lib.bpf_table_key_desc(self.module, name).decode("utf-8")
             if not key_desc:
                 raise Exception("Failed to load BPF Table %s key desc" % name)
             keytype = BPF._decode_table_type(json.loads(key_desc))
         if not leaftype:
-            leaf_desc = lib.bpf_table_leaf_desc(self.module, name)
+            leaf_desc = lib.bpf_table_leaf_desc(self.module, name).decode("utf-8")
             if not leaf_desc:
                 raise Exception("Failed to load BPF Table %s leaf desc" % name)
             leaftype = BPF._decode_table_type(json.loads(leaf_desc))
-        return Table(self, map_id, map_fd, keytype, leaftype, reducer=reducer)
+        return Table(self, map_id, map_fd, keytype, leaftype, name, reducer=reducer)
 
     def __getitem__(self, key):
         if key not in self.tables:
@@ -460,11 +517,6 @@ class BPF(object):
 
     def __iter__(self):
         return self.tables.__iter__()
-
-    def _reader_cb(self, pid, callchain_num, callchain):
-        if self._user_cb:
-            cc = tuple(callchain[i] for i in range(0, callchain_num))
-            self._user_cb(pid, cc)
 
     @staticmethod
     def attach_raw_socket(fn, dev):
@@ -487,9 +539,45 @@ class BPF(object):
         with open("%s/../kprobes/blacklist" % TRACEFS, "rb") as blacklist_f:
             blacklist = set([line.rstrip().split()[1] for line in blacklist_f])
         fns = []
+
+        in_init_section = 0
+        in_irq_section = 0
         with open("/proc/kallsyms", "rb") as avail_file:
             for line in avail_file:
-                (_, t, fn) = line.rstrip().split()[:3]
+                (t, fn) = line.rstrip().split()[1:3]
+                # Skip all functions defined between __init_begin and
+                # __init_end
+                if in_init_section == 0:
+                    if fn == b'__init_begin':
+                        in_init_section = 1
+                        continue
+                elif in_init_section == 1:
+                    if fn == b'__init_end':
+                        in_init_section = 2
+                    continue
+                # Skip all functions defined between __irqentry_text_start and
+                # __irqentry_text_end
+                if in_irq_section == 0:
+                    if fn == b'__irqentry_text_start':
+                        in_irq_section = 1
+                        continue
+                elif in_irq_section == 1:
+                    if fn == b'__irqentry_text_end':
+                        in_irq_section = 2
+                    continue
+                # All functions defined as NOKPROBE_SYMBOL() start with the
+                # prefix _kbl_addr_*, blacklisting them by looking at the name
+                # allows to catch also those symbols that are defined in kernel
+                # modules.
+                if fn.startswith(b'_kbl_addr_'):
+                    continue
+                # Explicitly blacklist perf-related functions, they are all
+                # non-attachable.
+                elif fn.startswith(b'__perf') or fn.startswith(b'perf_'):
+                    continue
+                # Exclude all gcc 8's extra .cold functions
+                elif re.match(b'^.*\.cold(\.\d+)?$', fn):
+                    continue
                 if (t.lower() in [b't', b'w']) and re.match(event_re, fn) \
                     and fn not in blacklist:
                     fns.append(fn)
@@ -497,20 +585,56 @@ class BPF(object):
 
     def _check_probe_quota(self, num_new_probes):
         global _num_open_probes
-        if _num_open_probes + num_new_probes > _kprobe_limit:
+        if _num_open_probes + num_new_probes > _probe_limit:
             raise Exception("Number of open probes would exceed global quota")
 
-    def _add_kprobe(self, name, probe):
+    def _add_kprobe_fd(self, name, fd):
         global _num_open_probes
-        self.open_kprobes[name] = probe
+        self.kprobe_fds[name] = fd
         _num_open_probes += 1
 
-    def _del_kprobe(self, name):
+    def _del_kprobe_fd(self, name):
         global _num_open_probes
-        del self.open_kprobes[name]
+        del self.kprobe_fds[name]
+        _num_open_probes -= 1
+ 
+    def _add_uprobe_fd(self, name, fd):
+        global _num_open_probes
+        self.uprobe_fds[name] = fd
+        _num_open_probes += 1
+
+    def _del_uprobe_fd(self, name):
+        global _num_open_probes
+        del self.uprobe_fds[name]
         _num_open_probes -= 1
 
-    def attach_kprobe(self, event=b"", fn_name=b"", event_re=b""):
+    # Find current system's syscall prefix by testing on the BPF syscall.
+    # If no valid value found, will return the first possible value which
+    # would probably lead to error in later API calls.
+    def get_syscall_prefix(self):
+        for prefix in self._syscall_prefixes:
+            if self.ksymname(b"%sbpf" % prefix) != -1:
+                return prefix
+        return self._syscall_prefixes[0]
+
+    # Given a syscall's name, return the full Kernel function name with current
+    # system's syscall prefix. For example, given "clone" the helper would
+    # return "sys_clone" or "__x64_sys_clone".
+    def get_syscall_fnname(self, name):
+        name = _assert_is_bytes(name)
+        return self.get_syscall_prefix() + name
+
+    # Given a Kernel function name that represents a syscall but already has a
+    # prefix included, transform it to current system's prefix. For example,
+    # if "sys_clone" provided, the helper may translate it to "__x64_sys_clone".
+    def fix_syscall_fnname(self, name):
+        name = _assert_is_bytes(name)
+        for prefix in self._syscall_prefixes:
+            if name.startswith(prefix):
+                return self.get_syscall_fnname(name[len(prefix):])
+        return name
+       
+    def attach_kprobe(self, event=b"", event_off=0, fn_name=b"", event_re=b""):
         event = _assert_is_bytes(event)
         fn_name = _assert_is_bytes(fn_name)
         event_re = _assert_is_bytes(event_re)
@@ -529,26 +653,14 @@ class BPF(object):
         self._check_probe_quota(1)
         fn = self.load_func(fn_name, BPF.KPROBE)
         ev_name = b"p_" + event.replace(b"+", b"_").replace(b".", b"_")
-        res = lib.bpf_attach_kprobe(fn.fd, 0, ev_name, event,
-                self._reader_cb_impl, ct.cast(id(self), ct.py_object))
-        res = ct.cast(res, ct.c_void_p)
-        if not res:
-            raise Exception("Failed to attach BPF to kprobe")
-        self._add_kprobe(ev_name, res)
+        fd = lib.bpf_attach_kprobe(fn.fd, 0, ev_name, event, event_off, 0)
+        if fd < 0:
+            raise Exception("Failed to attach BPF program %s to kprobe %s" %
+                            (fn_name, event))
+        self._add_kprobe_fd(ev_name, fd)
         return self
 
-    def detach_kprobe(self, event):
-        event = _assert_is_bytes(event)
-        ev_name = b"p_" + event.replace(b"+", b"_").replace(b".", b"_")
-        if ev_name not in self.open_kprobes:
-            raise Exception("Kprobe %s is not attached" % event)
-        lib.perf_reader_free(self.open_kprobes[ev_name])
-        res = lib.bpf_detach_kprobe(ev_name)
-        if res < 0:
-            raise Exception("Failed to detach BPF from kprobe")
-        self._del_kprobe(ev_name)
-
-    def attach_kretprobe(self, event=b"", fn_name=b"", event_re=b""):
+    def attach_kretprobe(self, event=b"", fn_name=b"", event_re=b"", maxactive=0):
         event = _assert_is_bytes(event)
         fn_name = _assert_is_bytes(fn_name)
         event_re = _assert_is_bytes(event_re)
@@ -557,7 +669,8 @@ class BPF(object):
         if event_re:
             for line in BPF.get_kprobe_functions(event_re):
                 try:
-                    self.attach_kretprobe(event=line, fn_name=fn_name)
+                    self.attach_kretprobe(event=line, fn_name=fn_name,
+                                          maxactive=maxactive)
                 except:
                     pass
             return
@@ -565,25 +678,33 @@ class BPF(object):
         self._check_probe_quota(1)
         fn = self.load_func(fn_name, BPF.KPROBE)
         ev_name = b"r_" + event.replace(b"+", b"_").replace(b".", b"_")
-        res = lib.bpf_attach_kprobe(fn.fd, 1, ev_name, event,
-                self._reader_cb_impl,
-                ct.cast(id(self), ct.py_object))
-        res = ct.cast(res, ct.c_void_p)
-        if not res:
-            raise Exception("Failed to attach BPF to kprobe")
-        self._add_kprobe(ev_name, res)
+        fd = lib.bpf_attach_kprobe(fn.fd, 1, ev_name, event, 0, maxactive)
+        if fd < 0:
+            raise Exception("Failed to attach BPF program %s to kretprobe %s" %
+                            (fn_name, event))
+        self._add_kprobe_fd(ev_name, fd)
         return self
+
+    def detach_kprobe_event(self, ev_name):
+        if ev_name not in self.kprobe_fds:
+            raise Exception("Kprobe %s is not attached" % ev_name)
+        res = lib.bpf_close_perf_event_fd(self.kprobe_fds[ev_name])
+        if res < 0:
+            raise Exception("Failed to close kprobe FD")
+        res = lib.bpf_detach_kprobe(ev_name)
+        if res < 0:
+            raise Exception("Failed to detach BPF from kprobe")
+        self._del_kprobe_fd(ev_name)
+
+    def detach_kprobe(self, event):
+        event = _assert_is_bytes(event)
+        ev_name = b"p_" + event.replace(b"+", b"_").replace(b".", b"_")
+        self.detach_kprobe_event(ev_name)
 
     def detach_kretprobe(self, event):
         event = _assert_is_bytes(event)
         ev_name = b"r_" + event.replace(b"+", b"_").replace(b".", b"_")
-        if ev_name not in self.open_kprobes:
-            raise Exception("Kretprobe %s is not attached" % event)
-        lib.perf_reader_free(self.open_kprobes[ev_name])
-        res = lib.bpf_detach_kprobe(ev_name)
-        if res < 0:
-            raise Exception("Failed to detach BPF from kprobe")
-        self._del_kprobe(ev_name)
+        self.detach_kprobe_event(ev_name)
 
     @staticmethod
     def attach_xdp(dev, fn, flags=0):
@@ -659,7 +780,7 @@ class BPF(object):
                 evt_dir = os.path.join(cat_dir, event)
                 if os.path.isdir(evt_dir):
                     tp = ("%s:%s" % (category, event))
-                    if re.match(tp_re, tp):
+                    if re.match(tp_re.decode(), tp):
                         results.append(tp)
         return results
 
@@ -699,13 +820,59 @@ class BPF(object):
 
         fn = self.load_func(fn_name, BPF.TRACEPOINT)
         (tp_category, tp_name) = tp.split(b':')
-        res = lib.bpf_attach_tracepoint(fn.fd, tp_category, tp_name,
-                self._reader_cb_impl, ct.cast(id(self), ct.py_object))
-        res = ct.cast(res, ct.c_void_p)
-        if not res:
-            raise Exception("Failed to attach BPF to tracepoint")
-        self.open_tracepoints[tp] = res
+        fd = lib.bpf_attach_tracepoint(fn.fd, tp_category, tp_name)
+        if fd < 0:
+            raise Exception("Failed to attach BPF program %s to tracepoint %s" %
+                            (fn_name, tp))
+        self.tracepoint_fds[tp] = fd
         return self
+
+    def attach_raw_tracepoint(self, tp=b"", fn_name=b""):
+        """attach_raw_tracepoint(self, tp=b"", fn_name=b"")
+
+        Run the bpf function denoted by fn_name every time the kernel tracepoint
+        specified by 'tp' is hit. The bpf function should be loaded as a
+        RAW_TRACEPOINT type. The fn_name is the kernel tracepoint name,
+        e.g., sched_switch, sys_enter_bind, etc.
+
+        Examples:
+            BPF(text).attach_raw_tracepoint(tp="sched_switch", fn_name="on_switch")
+        """
+
+        tp = _assert_is_bytes(tp)
+        if tp in self.raw_tracepoint_fds:
+            raise Exception("Raw tracepoint %s has been attached" % tp)
+
+        fn_name = _assert_is_bytes(fn_name)
+        fn = self.load_func(fn_name, BPF.RAW_TRACEPOINT)
+        fd = lib.bpf_attach_raw_tracepoint(fn.fd, tp)
+        if fd < 0:
+            raise Exception("Failed to attach BPF to raw tracepoint")
+        self.raw_tracepoint_fds[tp] = fd;
+        return self
+
+    def detach_raw_tracepoint(self, tp=b""):
+        """detach_raw_tracepoint(tp="")
+
+        Stop running the bpf function that is attached to the kernel tracepoint
+        specified by 'tp'.
+
+        Example: bpf.detach_raw_tracepoint("sched_switch")
+        """
+
+        tp = _assert_is_bytes(tp)
+        if tp not in self.raw_tracepoint_fds:
+            raise Exception("Raw tracepoint %s is not attached" % tp)
+        os.close(self.raw_tracepoint_fds[tp])
+        del self.raw_tracepoint_fds[tp]
+
+    @staticmethod
+    def support_raw_tracepoint():
+        # kernel symbol "bpf_find_raw_tracepoint" indicates raw_tracepint support
+        if BPF.ksymname("bpf_find_raw_tracepoint") != -1 or \
+           BPF.ksymname("bpf_get_raw_tracepoint") != -1:
+            return True
+        return False
 
     def detach_tracepoint(self, tp=b""):
         """detach_tracepoint(tp="")
@@ -717,14 +884,16 @@ class BPF(object):
         """
 
         tp = _assert_is_bytes(tp)
-        if tp not in self.open_tracepoints:
+        if tp not in self.tracepoint_fds:
             raise Exception("Tracepoint %s is not attached" % tp)
-        lib.perf_reader_free(self.open_tracepoints[tp])
+        res = lib.bpf_close_perf_event_fd(self.tracepoint_fds[tp])
+        if res < 0:
+            raise Exception("Failed to detach BPF from tracepoint")
         (tp_category, tp_name) = tp.split(b':')
         res = lib.bpf_detach_tracepoint(tp_category, tp_name)
         if res < 0:
             raise Exception("Failed to detach BPF from tracepoint")
-        del self.open_tracepoints[tp]
+        del self.tracepoint_fds[tp]
 
     def _attach_perf_event(self, progfd, ev_type, ev_config,
             sample_period, sample_freq, pid, cpu, group_fd):
@@ -761,16 +930,6 @@ class BPF(object):
         if res != 0:
             raise Exception("Failed to detach BPF from perf event")
         del self.open_perf_events[(ev_type, ev_config)]
-
-    def _add_uprobe(self, name, probe):
-        global _num_open_probes
-        self.open_uprobes[name] = probe
-        _num_open_probes += 1
-
-    def _del_uprobe(self, name):
-        global _num_open_probes
-        del self.open_uprobes[name]
-        _num_open_probes -= 1
 
     @staticmethod
     def get_user_functions(name, sym_re):
@@ -820,9 +979,13 @@ class BPF(object):
                          pid=-1)
 
         Run the bpf function denoted by fn_name every time the symbol sym in
-        the library or binary 'name' is encountered. The real address addr may
-        be supplied in place of sym. Optional parameters pid, cpu, and group_fd
-        can be used to filter the probe.
+        the library or binary 'name' is encountered. Optional parameters pid,
+        cpu, and group_fd can be used to filter the probe.
+
+        The real address addr may be supplied in place of sym, in which case sym
+        must be set to its default value. If the file is a non-PIE executable,
+        addr must be a virtual address, otherwise it must be an offset relative
+        to the file load address.
 
         Instead of a symbol name, a regular expression can be provided in
         sym_re. The uprobe will then attach to symbols that match the provided
@@ -855,32 +1018,11 @@ class BPF(object):
         self._check_probe_quota(1)
         fn = self.load_func(fn_name, BPF.KPROBE)
         ev_name = self._get_uprobe_evname(b"p", path, addr, pid)
-        res = lib.bpf_attach_uprobe(fn.fd, 0, ev_name, path, addr, pid,
-                self._reader_cb_impl, ct.cast(id(self), ct.py_object))
-        res = ct.cast(res, ct.c_void_p)
-        if not res:
+        fd = lib.bpf_attach_uprobe(fn.fd, 0, ev_name, path, addr, pid)
+        if fd < 0:
             raise Exception("Failed to attach BPF to uprobe")
-        self._add_uprobe(ev_name, res)
+        self._add_uprobe_fd(ev_name, fd)
         return self
-
-    def detach_uprobe(self, name=b"", sym=b"", addr=None, pid=-1):
-        """detach_uprobe(name="", sym="", addr=None, pid=-1)
-
-        Stop running a bpf function that is attached to symbol 'sym' in library
-        or binary 'name'.
-        """
-
-        name = _assert_is_bytes(name)
-        sym = _assert_is_bytes(sym)
-        (path, addr) = BPF._check_path_symbol(name, sym, addr, pid)
-        ev_name = self._get_uprobe_evname(b"p", path, addr, pid)
-        if ev_name not in self.open_uprobes:
-            raise Exception("Uprobe %s is not attached" % ev_name)
-        lib.perf_reader_free(self.open_uprobes[ev_name])
-        res = lib.bpf_detach_uprobe(ev_name)
-        if res < 0:
-            raise Exception("Failed to detach BPF from uprobe")
-        self._del_uprobe(ev_name)
 
     def attach_uretprobe(self, name=b"", sym=b"", sym_re=b"", addr=None,
             fn_name=b"", pid=-1):
@@ -908,13 +1050,35 @@ class BPF(object):
         self._check_probe_quota(1)
         fn = self.load_func(fn_name, BPF.KPROBE)
         ev_name = self._get_uprobe_evname(b"r", path, addr, pid)
-        res = lib.bpf_attach_uprobe(fn.fd, 1, ev_name, path, addr, pid,
-                self._reader_cb_impl, ct.cast(id(self), ct.py_object))
-        res = ct.cast(res, ct.c_void_p)
-        if not res:
-            raise Exception("Failed to attach BPF to uprobe")
-        self._add_uprobe(ev_name, res)
+        fd = lib.bpf_attach_uprobe(fn.fd, 1, ev_name, path, addr, pid)
+        if fd < 0:
+            raise Exception("Failed to attach BPF to uretprobe")
+        self._add_uprobe_fd(ev_name, fd)
         return self
+
+    def detach_uprobe_event(self, ev_name):
+        if ev_name not in self.uprobe_fds:
+            raise Exception("Uprobe %s is not attached" % ev_name)
+        res = lib.bpf_close_perf_event_fd(self.uprobe_fds[ev_name])
+        if res < 0:
+            raise Exception("Failed to detach BPF from uprobe")
+        res = lib.bpf_detach_uprobe(ev_name)
+        if res < 0:
+            raise Exception("Failed to detach BPF from uprobe")
+        self._del_uprobe_fd(ev_name)
+
+    def detach_uprobe(self, name=b"", sym=b"", addr=None, pid=-1):
+        """detach_uprobe(name="", sym="", addr=None, pid=-1)
+
+        Stop running a bpf function that is attached to symbol 'sym' in library
+        or binary 'name'.
+        """
+
+        name = _assert_is_bytes(name)
+        sym = _assert_is_bytes(sym)
+        (path, addr) = BPF._check_path_symbol(name, sym, addr, pid)
+        ev_name = self._get_uprobe_evname(b"p", path, addr, pid)
+        self.detach_uprobe_event(ev_name)
 
     def detach_uretprobe(self, name=b"", sym=b"", addr=None, pid=-1):
         """detach_uretprobe(name="", sym="", addr=None, pid=-1)
@@ -928,27 +1092,29 @@ class BPF(object):
 
         (path, addr) = BPF._check_path_symbol(name, sym, addr, pid)
         ev_name = self._get_uprobe_evname(b"r", path, addr, pid)
-        if ev_name not in self.open_uprobes:
-            raise Exception("Uretprobe %s is not attached" % ev_name)
-        lib.perf_reader_free(self.open_uprobes[ev_name])
-        res = lib.bpf_detach_uprobe(ev_name)
-        if res < 0:
-            raise Exception("Failed to detach BPF from uprobe")
-        self._del_uprobe(ev_name)
+        self.detach_uprobe_event(ev_name)
 
     def _trace_autoload(self):
         for i in range(0, lib.bpf_num_functions(self.module)):
             func_name = lib.bpf_function_name(self.module, i)
             if func_name.startswith(b"kprobe__"):
                 fn = self.load_func(func_name, BPF.KPROBE)
-                self.attach_kprobe(event=fn.name[8:], fn_name=fn.name)
+                self.attach_kprobe(
+                    event=self.fix_syscall_fnname(func_name[8:]),
+                    fn_name=fn.name)
             elif func_name.startswith(b"kretprobe__"):
                 fn = self.load_func(func_name, BPF.KPROBE)
-                self.attach_kretprobe(event=fn.name[11:], fn_name=fn.name)
+                self.attach_kretprobe(
+                    event=self.fix_syscall_fnname(func_name[11:]),
+                    fn_name=fn.name)
             elif func_name.startswith(b"tracepoint__"):
                 fn = self.load_func(func_name, BPF.TRACEPOINT)
                 tp = fn.name[len(b"tracepoint__"):].replace(b"__", b":")
                 self.attach_tracepoint(tp=tp, fn_name=fn.name)
+            elif func_name.startswith(b"raw_tracepoint__"):
+                fn = self.load_func(func_name, BPF.RAW_TRACEPOINT)
+                tp = fn.name[len(b"raw_tracepoint__"):]
+                self.attach_raw_tracepoint(tp=tp, fn_name=fn.name)
 
     def trace_open(self, nonblocking=False):
         """trace_open(nonblocking=False)
@@ -970,30 +1136,27 @@ class BPF(object):
         fields (task, pid, cpu, flags, timestamp, msg) or None if no
         line was read (nonblocking=True)
         """
-        try:
-            while True:
-                line = self.trace_readline(nonblocking)
-                if not line and nonblocking: return (None,) * 6
-                # don't print messages related to lost events
-                if line.startswith(b"CPU:"): continue
-                task = line[:16].lstrip()
-                line = line[17:]
-                ts_end = line.find(b":")
-                pid, cpu, flags, ts = line[:ts_end].split()
-                cpu = cpu[1:-1]
-                # line[ts_end:] will have ": [sym_or_addr]: msgs"
-                # For trace_pipe debug output, the addr typically
-                # is invalid (e.g., 0x1). For kernel 4.12 or earlier,
-                # if address is not able to match a kernel symbol,
-                # nothing will be printed out. For kernel 4.13 and later,
-                # however, the illegal address will be printed out.
-                # Hence, both cases are handled here.
-                line = line[ts_end + 1:]
-                sym_end = line.find(":")
-                msg = line[sym_end + 2:]
-                return (task, int(pid), int(cpu), flags, float(ts), msg)
-        except KeyboardInterrupt:
-            exit()
+        while True:
+            line = self.trace_readline(nonblocking)
+            if not line and nonblocking: return (None,) * 6
+            # don't print messages related to lost events
+            if line.startswith(b"CPU:"): continue
+            task = line[:16].lstrip()
+            line = line[17:]
+            ts_end = line.find(b":")
+            pid, cpu, flags, ts = line[:ts_end].split()
+            cpu = cpu[1:-1]
+            # line[ts_end:] will have ": [sym_or_addr]: msgs"
+            # For trace_pipe debug output, the addr typically
+            # is invalid (e.g., 0x1). For kernel 4.12 or earlier,
+            # if address is not able to match a kernel symbol,
+            # nothing will be printed out. For kernel 4.13 and later,
+            # however, the illegal address will be printed out.
+            # Hence, both cases are handled here.
+            line = line[ts_end + 1:]
+            sym_end = line.find(b":")
+            msg = line[sym_end + 2:]
+            return (task, int(pid), int(cpu), flags, float(ts), msg)
 
     def trace_readline(self, nonblocking=False):
         """trace_readline(nonblocking=False)
@@ -1009,8 +1172,6 @@ class BPF(object):
             line = trace.readline(1024).rstrip()
         except IOError:
             pass
-        except KeyboardInterrupt:
-            exit()
         return line
 
     def trace_print(self, fmt=None):
@@ -1022,18 +1183,15 @@ class BPF(object):
         example: trace_print(fmt="pid {1}, msg = {5}")
         """
 
-        try:
-            while True:
-                if fmt:
-                    fields = self.trace_fields(nonblocking=False)
-                    if not fields: continue
-                    line = fmt.format(*fields)
-                else:
-                    line = self.trace_readline(nonblocking=False)
-                print(line)
-                sys.stdout.flush()
-        except KeyboardInterrupt:
-            exit()
+        while True:
+            if fmt:
+                fields = self.trace_fields(nonblocking=False)
+                if not fields: continue
+                line = fmt.format(*fields)
+            else:
+                line = self.trace_readline(nonblocking=False)
+            print(line)
+            sys.stdout.flush()
 
     @staticmethod
     def _sym_cache(pid):
@@ -1065,7 +1223,31 @@ class BPF(object):
         Example output when both show_module and show_offset are False:
             "start_thread"
         """
-        name, offset, module = BPF._sym_cache(pid).resolve(addr, demangle)
+
+        #addr is of type stacktrace_build_id
+        #so invoke the bsym address resolver
+        typeofaddr = str(type(addr))
+        if typeofaddr.find('bpf_stack_build_id') != -1:
+          sym = bcc_symbol()
+          b = bcc_stacktrace_build_id()
+          b.status = addr.status
+          b.build_id = addr.build_id
+          b.u.offset = addr.offset;
+          res = lib.bcc_buildsymcache_resolve(BPF._bsymcache,
+                                              ct.byref(b),
+                                              ct.byref(sym))
+          if res < 0:
+            if sym.module and sym.offset:
+              name,offset,module = (None, sym.offset,
+                        ct.cast(sym.module, ct.c_char_p).value)
+            else:
+              name, offset, module = (None, addr, None)
+          else:
+            name, offset, module = (sym.name, sym.offset,
+                                    ct.cast(sym.module, ct.c_char_p).value)
+        else:
+          name, offset, module = BPF._sym_cache(pid).resolve(addr, demangle)
+
         offset = b"+0x%x" % offset if show_offset and name is not None else b""
         name = name or b"[unknown]"
         name = name + offset
@@ -1099,68 +1281,82 @@ class BPF(object):
         """num_open_kprobes()
 
         Get the number of open K[ret]probes. Can be useful for scenarios where
-        event_re is used while attaching and detaching probes. Excludes
-        perf_events readers.
+        event_re is used while attaching and detaching probes.
         """
-        return len([k for k in self.open_kprobes.keys() if type(k) is bytes])
+        return len(self.kprobe_fds)
 
     def num_open_uprobes(self):
         """num_open_uprobes()
 
         Get the number of open U[ret]probes.
         """
-        return len(self.open_uprobes)
+        return len(self.uprobe_fds)
 
     def num_open_tracepoints(self):
         """num_open_tracepoints()
 
         Get the number of open tracepoints.
         """
-        return len(self.open_tracepoints)
+        return len(self.tracepoint_fds)
+
+    def perf_buffer_poll(self, timeout = -1):
+        """perf_buffer_poll(self)
+
+        Poll from all open perf ring buffers, calling the callback that was
+        provided when calling open_perf_buffer for each entry.
+        """
+        readers = (ct.c_void_p * len(self.perf_buffers))()
+        for i, v in enumerate(self.perf_buffers.values()):
+            readers[i] = v
+        lib.perf_reader_poll(len(readers), readers, timeout)
 
     def kprobe_poll(self, timeout = -1):
         """kprobe_poll(self)
 
-        Poll from the ring buffers for all of the open kprobes, calling the
-        cb() that was given in the BPF constructor for each entry.
+        Deprecated. Use perf_buffer_poll instead.
         """
-        try:
-            readers = (ct.c_void_p * len(self.open_kprobes))()
-            for i, v in enumerate(self.open_kprobes.values()):
-                readers[i] = v
-            lib.perf_reader_poll(len(self.open_kprobes), readers, timeout)
-        except KeyboardInterrupt:
-            exit()
+        self.perf_buffer_poll(timeout)
+
+    def free_bcc_memory(self):
+        return lib.bcc_free_memory()
+
+    @staticmethod
+    def add_module(modname):
+      """add_module(modname)
+
+        Add a library or exe to buildsym cache
+      """
+      try:
+        lib.bcc_buildsymcache_add_module(BPF._bsymcache, modname.encode())
+      except Exception as e:
+        print("Error adding module to build sym cache"+str(e))
 
     def donothing(self):
         """the do nothing exit handler"""
 
     def cleanup(self):
-        for k, v in list(self.open_kprobes.items()):
-            # non-string keys here include the perf_events reader
-            if isinstance(k, bytes):
-                lib.perf_reader_free(v)
-                lib.bpf_detach_kprobe(bytes(k))
-                self._del_kprobe(k)
-        # clean up opened perf ring buffer and perf events
+        # Clean up opened probes
+        for k, v in list(self.kprobe_fds.items()):
+            self.detach_kprobe_event(k)
+        for k, v in list(self.uprobe_fds.items()):
+            self.detach_uprobe_event(k)
+        for k, v in list(self.tracepoint_fds.items()):
+            self.detach_tracepoint(k)
+        for k, v in list(self.raw_tracepoint_fds.items()):
+            self.detach_raw_tracepoint(k)
+
+        # Clean up opened perf ring buffer and perf events
         table_keys = list(self.tables.keys())
         for key in table_keys:
             if isinstance(self.tables[key], PerfEventArray):
                 del self.tables[key]
-        for k, v in list(self.open_uprobes.items()):
-            lib.perf_reader_free(v)
-            lib.bpf_detach_uprobe(bytes(k))
-            self._del_uprobe(k)
-        for k, v in self.open_tracepoints.items():
-            lib.perf_reader_free(v)
-            (tp_category, tp_name) = k.split(b':')
-            lib.bpf_detach_tracepoint(tp_category, tp_name)
-        self.open_tracepoints.clear()
         for (ev_type, ev_config) in list(self.open_perf_events.keys()):
             self.detach_perf_event(ev_type, ev_config)
         if self.tracefile:
             self.tracefile.close()
             self.tracefile = None
+        for name, fn in list(self.funcs.items()):
+            os.close(fn.fd)
         if self.module:
             lib.bpf_module_destroy(self.module)
             self.module = None

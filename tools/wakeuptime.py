@@ -12,6 +12,7 @@
 
 from __future__ import print_function
 from bcc import BPF
+from bcc.utils import printb
 from time import sleep, strftime
 import argparse
 import signal
@@ -41,7 +42,7 @@ examples = """examples:
     ./wakeuptime 5           # trace for 5 seconds only
     ./wakeuptime -f 5        # 5 seconds, and output in folded format
     ./wakeuptime -u          # don't include kernel threads (user only)
-    ./wakeuptime -p 185      # trace fo PID 185 only
+    ./wakeuptime -p 185      # trace for PID 185 only
 """
 parser = argparse.ArgumentParser(
     description="Summarize sleep to wakeup time by waker kernel stack",
@@ -133,14 +134,12 @@ int waker(struct pt_regs *ctx, struct task_struct *p) {
         return 0;
 
     struct key_t key = {};
-    u64 zero = 0, *val;
 
     key.w_k_stack_id = stack_traces.get_stackid(ctx, BPF_F_REUSE_STACKID);
     bpf_probe_read(&key.target, sizeof(key.target), p->comm);
     bpf_get_current_comm(&key.waker, sizeof(key.waker));
 
-    val = counts.lookup_or_init(&key, &zero);
-    (*val) += delta;
+    counts.increment(key, delta);
     return 0;
 }
 """
@@ -206,17 +205,17 @@ while (1):
         if folded:
             # print folded stack output
             line = \
-                [k.waker.decode()] + \
+                [k.waker] + \
                 [b.ksym(addr)
                     for addr in reversed(list(waker_kernel_stack))] + \
-                [k.target.decode()]
-            print("%s %d" % (";".join(line), v.value))
+                [k.target]
+            printb(b"%s %d" % (b";".join(line), v.value))
         else:
             # print default multi-line stack output
-            print("    %-16s %s" % ("target:", k.target.decode()))
+            printb(b"    %-16s %s" % (b"target:", k.target))
             for addr in waker_kernel_stack:
-                print("    %-16x %s" % (addr, b.ksym(addr)))
-            print("    %-16s %s" % ("waker:", k.waker.decode()))
+                printb(b"    %-16x %s" % (addr, b.ksym(addr)))
+            printb(b"    %-16s %s" % (b"waker:", k.waker))
             print("        %d\n" % v.value)
     counts.clear()
 

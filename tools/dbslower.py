@@ -27,7 +27,6 @@
 from bcc import BPF, USDT
 import argparse
 import re
-import ctypes as ct
 import subprocess
 
 examples = """examples:
@@ -69,7 +68,7 @@ if args.path and not args.pids:
 
         (mysql_func_name, addr) = symbols[0]
 
-        if mysql_func_name.find("COM_DATA") >= 0:
+        if mysql_func_name.find(b'COM_DATA') >= 0:
             mode = "MYSQL57"
         else:
             mode = "MYSQL56"
@@ -203,21 +202,13 @@ if args.verbose or args.ebpf:
     if args.ebpf:
         exit()
 
-class Data(ct.Structure):
-    _fields_ = [
-        ("pid", ct.c_ulonglong),
-        ("timestamp", ct.c_ulonglong),
-        ("delta", ct.c_ulonglong),
-        ("query", ct.c_char * 256)
-    ]
-
 start = BPF.monotonic_time()
 
 def print_event(cpu, data, size):
-    event = ct.cast(data, ct.POINTER(Data)).contents
+    event = bpf["events"].event(data)
     print("%-14.6f %-6d %8.3f %s" % (
         float(event.timestamp - start) / 1000000000,
-        event.pid, float(event.delta) / 1000000, event.query))
+        event.pid, float(event.duration) / 1000000, event.query))
 
 if mode.startswith("MYSQL"):
     print("Tracing database queries for application %s slower than %d ms..." %
@@ -230,4 +221,7 @@ print("%-14s %-6s %8s %s" % ("TIME(s)", "PID", "MS", "QUERY"))
 
 bpf["events"].open_perf_buffer(print_event, page_cnt=64)
 while True:
-    bpf.kprobe_poll()
+    try:
+        bpf.perf_buffer_poll()
+    except KeyboardInterrupt:
+        exit()

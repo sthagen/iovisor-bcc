@@ -63,7 +63,7 @@ More [examples](../tools/execsnoop_example.txt).
 
 ```
 # ./opensnoop
-PID    COMM      FD ERR PATH
+PID    COMM               FD ERR PATH
 1565   redis-server        5   0 /proc/1565/stat
 1565   redis-server        5   0 /proc/1565/stat
 1565   redis-server        5   0 /proc/1565/stat
@@ -214,7 +214,7 @@ More [examples](../tools/tcpaccept_example.txt).
 #### 1.9. tcpretrans
 
 ```
-# ./tcpretrans 
+# ./tcpretrans
 TIME     PID    IP LADDR:LPORT          T> RADDR:RPORT          STATE
 01:55:05 0      4  10.153.223.157:22    R> 69.53.245.40:34619   ESTABLISHED
 01:55:05 0      4  10.153.223.157:22    R> 69.53.245.40:34619   ESTABLISHED
@@ -224,14 +224,14 @@ TIME     PID    IP LADDR:LPORT          T> RADDR:RPORT          STATE
 
 tcprerans prints one line of output for every TCP retransmit packet, with details including source and destination addresses, and kernel state of the TCP connection.
 
-TCP retransmissions cause latency and throughput issues. For ESTABLESHID retransmits, look for patterns with networks. For SYN_SENT, this may point to target kernel CPU saturation and kernel packet drops.
+TCP retransmissions cause latency and throughput issues. For ESTABLISHED retransmits, look for patterns with networks. For SYN_SENT, this may point to target kernel CPU saturation and kernel packet drops.
 
 More [examples](../tools/tcpretrans_example.txt).
 
 #### 1.10. runqlat
 
 ```
-# ./runqlat 
+# ./runqlat
 Tracing run queue latency... Hit Ctrl-C to end.
 ^C
      usecs               : count     distribution
@@ -300,7 +300,7 @@ Sampling at 49 Hertz of all threads by user + kernel stack... Hit Ctrl-C to end.
         75
 ```
 
-profile is a CPU profiler, which takes samples of stack traces at timed intervals, and prints a summary of unique stack traces and a count of their occurrence. 
+profile is a CPU profiler, which takes samples of stack traces at timed intervals, and prints a summary of unique stack traces and a count of their occurrence.
 
 Use this tool to understand the code paths that are consuming CPU resources.
 

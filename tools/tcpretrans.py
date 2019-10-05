@@ -21,7 +21,6 @@ import argparse
 from time import strftime
 from socket import inet_ntop, AF_INET, AF_INET6
 from struct import pack
-import ctypes as ct
 from time import sleep
 
 # arguments
@@ -53,25 +52,24 @@ bpf_text = """
 
 // separate data structs for ipv4 and ipv6
 struct ipv4_data_t {
-    // XXX: switch some to u32's when supported
-    u64 pid;
+    u32 pid;
     u64 ip;
-    u64 saddr;
-    u64 daddr;
-    u64 lport;
-    u64 dport;
+    u32 saddr;
+    u32 daddr;
+    u16 lport;
+    u16 dport;
     u64 state;
     u64 type;
 };
 BPF_PERF_OUTPUT(ipv4_events);
 
 struct ipv6_data_t {
-    u64 pid;
+    u32 pid;
     u64 ip;
     unsigned __int128 saddr;
     unsigned __int128 daddr;
-    u64 lport;
-    u64 dport;
+    u16 lport;
+    u16 dport;
     u64 state;
     u64 type;
 };
@@ -98,7 +96,7 @@ static int trace_event(struct pt_regs *ctx, struct sock *skp, int type)
 {
     if (skp == NULL)
         return 0;
-    u32 pid = bpf_get_current_pid_tgid();
+    u32 pid = bpf_get_current_pid_tgid() >> 32;
 
     // pull in details
     u16 family = skp->__sk_common.skc_family;
@@ -131,8 +129,8 @@ int trace_tlp(struct pt_regs *ctx, struct sock *sk)
 }
 """
 
-struct_init = { 'ipv4':  
-        { 'count' : 
+struct_init = { 'ipv4':
+        { 'count' :
             """
                struct ipv4_flow_key_t flow_key = {};
                flow_key.saddr = skp->__sk_common.skc_rcv_saddr;
@@ -140,9 +138,12 @@ struct_init = { 'ipv4':
                // lport is host order
                flow_key.lport = lport;
                flow_key.dport = ntohs(dport);""",
-               'trace' : 
+               'trace' :
                """
-               struct ipv4_data_t data4 = {.pid = pid, .ip = 4, .type = type};
+               struct ipv4_data_t data4 = {};
+               data4.pid = pid;
+               data4.ip = 4;
+               data4.type = type;
                data4.saddr = skp->__sk_common.skc_rcv_saddr;
                data4.daddr = skp->__sk_common.skc_daddr;
                // lport is host order
@@ -150,7 +151,7 @@ struct_init = { 'ipv4':
                data4.dport = ntohs(dport);
                data4.state = state; """
                },
-        'ipv6': 
+        'ipv6':
         { 'count' :
             """
                     struct ipv6_flow_key_t flow_key = {};
@@ -162,7 +163,10 @@ struct_init = { 'ipv4':
                     flow_key.lport = lport;
                     flow_key.dport = ntohs(dport);""",
           'trace' : """
-                    struct ipv6_data_t data6 = {.pid = pid, .ip = 6, .type = type};
+                    struct ipv6_data_t data6 = {};
+                    data6.pid = pid;
+                    data6.ip = 6;
+                    data6.type = type;
                     bpf_probe_read(&data6.saddr, sizeof(data6.saddr),
                         skp->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr32);
                     bpf_probe_read(&data6.daddr, sizeof(data6.daddr),
@@ -175,10 +179,8 @@ struct_init = { 'ipv4':
         }
 
 count_core_base = """
-        u64 zero = 0, *val;
-        val = COUNT_STRUCT.lookup_or_init(&flow_key, &zero);
-        (*val)++;
-""" 
+        COUNT_STRUCT.increment(flow_key);
+"""
 
 if args.count:
     bpf_text = bpf_text.replace("IPV4_INIT", struct_init['ipv4']['count'])
@@ -195,31 +197,6 @@ if debug or args.ebpf:
     print(bpf_text)
     if args.ebpf:
         exit()
-
-# event data
-class Data_ipv4(ct.Structure):
-    _fields_ = [
-        ("pid", ct.c_ulonglong),
-        ("ip", ct.c_ulonglong),
-        ("saddr", ct.c_ulonglong),
-        ("daddr", ct.c_ulonglong),
-        ("lport", ct.c_ulonglong),
-        ("dport", ct.c_ulonglong),
-        ("state", ct.c_ulonglong),
-        ("type", ct.c_ulonglong)
-    ]
-
-class Data_ipv6(ct.Structure):
-    _fields_ = [
-        ("pid", ct.c_ulonglong),
-        ("ip", ct.c_ulonglong),
-        ("saddr", (ct.c_ulonglong * 2)),
-        ("daddr", (ct.c_ulonglong * 2)),
-        ("lport", ct.c_ulonglong),
-        ("dport", ct.c_ulonglong),
-        ("state", ct.c_ulonglong),
-        ("type", ct.c_ulonglong)
-    ]
 
 # from bpf_text:
 type = {}
@@ -243,7 +220,7 @@ tcpstate[12] = 'NEW_SYN_RECV'
 
 # process event
 def print_ipv4_event(cpu, data, size):
-    event = ct.cast(data, ct.POINTER(Data_ipv4)).contents
+    event = b["ipv4_events"].event(data)
     print("%-8s %-6d %-2d %-20s %1s> %-20s %s" % (
         strftime("%H:%M:%S"), event.pid, event.ip,
         "%s:%d" % (inet_ntop(AF_INET, pack('I', event.saddr)), event.lport),
@@ -252,7 +229,7 @@ def print_ipv4_event(cpu, data, size):
         tcpstate[event.state]))
 
 def print_ipv6_event(cpu, data, size):
-    event = ct.cast(data, ct.POINTER(Data_ipv6)).contents
+    event = b["ipv6_events"].event(data)
     print("%-8s %-6d %-2d %-20s %1s> %-20s %s" % (
         strftime("%H:%M:%S"), event.pid, event.ip,
         "%s:%d" % (inet_ntop(AF_INET6, event.saddr), event.lport),
@@ -266,7 +243,7 @@ def depict_cnt(counts_tab, l3prot='ipv4'):
         ep_fmt = "[%s]#%d"
         if l3prot == 'ipv4':
             depict_key = "%-20s <-> %-20s" % (ep_fmt % (inet_ntop(AF_INET, pack('I', k.saddr)), k.lport),
-                                              ep_fmt % (inet_ntop(AF_INET, pack('I', k.daddr)), k.dport)) 
+                                              ep_fmt % (inet_ntop(AF_INET, pack('I', k.daddr)), k.dport))
         else:
             depict_key = "%-20s <-> %-20s" % (ep_fmt % (inet_ntop(AF_INET6, k.saddr), k.lport),
                                               ep_fmt % (inet_ntop(AF_INET6, k.daddr), k.dport))
@@ -290,7 +267,7 @@ if args.count:
     # header
     print("\n%-25s %-25s %-10s" % (
         "LADDR:LPORT", "RADDR:RPORT", "RETRANSMITS"))
-    depict_cnt(b.get_table("ipv4_count")) 
+    depict_cnt(b.get_table("ipv4_count"))
     depict_cnt(b.get_table("ipv6_count"), l3prot='ipv6')
 # read events
 else:
@@ -300,4 +277,7 @@ else:
     b["ipv4_events"].open_perf_buffer(print_ipv4_event)
     b["ipv6_events"].open_perf_buffer(print_ipv6_event)
     while 1:
-        b.kprobe_poll()
+        try:
+            b.perf_buffer_poll()
+        except KeyboardInterrupt:
+            exit()

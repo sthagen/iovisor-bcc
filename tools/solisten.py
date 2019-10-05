@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/python
 #
 # solisten      Trace TCP listen events
 #               For Linux, uses BCC, eBPF. Embedded C.
@@ -9,8 +9,8 @@
 # It could be useful in scenarios where load balancers needs to be updated
 # dynamically as application is fully initialized.
 #
-# All IPv4 listen attempts are traced, even if they ultimately fail or the
-# the listening program is not willing to accept().
+# All IPv4 and IPv6 listen attempts are traced, even if they ultimately fail
+# or the the listening program is not willing to accept().
 #
 # Copyright (c) 2016 Jean-Tiare Le Bigot.
 # Licensed under the Apache License, Version 2.0 (the "License")
@@ -22,7 +22,7 @@ from socket import inet_ntop, AF_INET, AF_INET6, SOCK_STREAM, SOCK_DGRAM
 from struct import pack
 import argparse
 from bcc import BPF
-import ctypes as ct
+from bcc.utils import printb
 
 # Arguments
 examples = """Examples:
@@ -122,27 +122,13 @@ int kprobe__inet_listen(struct pt_regs *ctx, struct socket *sock, int backlog)
 };
 """
 
-# event data
-TASK_COMM_LEN = 16      # linux/sched.h
-class ListenEvt(ct.Structure):
-    _fields_ = [
-        ("ts_us", ct.c_ulonglong),
-        ("pid_tgid", ct.c_ulonglong),
-        ("backlog", ct.c_ulonglong),
-        ("netns", ct.c_ulonglong),
-        ("proto", ct.c_ulonglong),
-        ("lport", ct.c_ulonglong),
-        ("laddr", ct.c_ulonglong * 2),
-        ("task", ct.c_char * TASK_COMM_LEN)
-    ]
-
     # TODO: properties to unpack protocol / ip / pid / tgid ...
 
 # Format output
 def event_printer(show_netns):
     def print_event(cpu, data, size):
         # Decode event
-        event = ct.cast(data, ct.POINTER(ListenEvt)).contents
+        event = b["listen_evt"].event(data)
 
         pid = event.pid_tgid & 0xffffffff
         proto_family = event.proto & 0xff
@@ -165,14 +151,14 @@ def event_printer(show_netns):
 
         # Display
         if show_netns:
-            print("%-6d %-12.12s %-12s %-6s %-8s %-5s %-39s" % (
-                pid, event.task, event.netns, protocol, event.backlog,
-                event.lport, address,
+            printb(b"%-6d %-12.12s %-12d %-6s %-8d %-5d %-39s" % (
+                pid, event.task, event.netns, protocol.encode(), event.backlog,
+                event.lport, address.encode(),
             ))
         else:
-            print("%-6d %-12.12s %-6s %-8s %-5s %-39s" % (
-                pid, event.task, protocol, event.backlog,
-                event.lport, address,
+            printb(b"%-6d %-12.12s %-6s %-8d %-5d %-39s" % (
+                pid, event.task, protocol.encode(), event.backlog,
+                event.lport, address.encode(),
             ))
 
     return print_event
@@ -210,4 +196,7 @@ if __name__ == "__main__":
 
     # Read events
     while 1:
-        b.kprobe_poll()
+        try:
+            b.perf_buffer_poll()
+        except KeyboardInterrupt:
+            exit()

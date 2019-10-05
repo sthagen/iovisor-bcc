@@ -19,13 +19,14 @@
 #include <cctype>
 #include <cstdint>
 #include <memory>
+#include <ostream>
 #include <string>
 
 #include "BPFTable.h"
 #include "bcc_exception.h"
 #include "bcc_syms.h"
 #include "bpf_module.h"
-#include "compat/linux/bpf.h"
+#include "linux/bpf.h"
 #include "libbpf.h"
 #include "table_storage.h"
 
@@ -34,9 +35,9 @@ static const int DEFAULT_PERF_BUFFER_PAGE_CNT = 8;
 namespace ebpf {
 
 struct open_probe_t {
-  void* reader_ptr;
+  int perf_event_fd;
   std::string func;
-  std::map<int, int>* per_cpu_fd;
+  std::vector<std::pair<int, int>>* per_cpu_fd;
 };
 
 class USDT;
@@ -46,8 +47,13 @@ class BPF {
   static const int BPF_MAX_STACK_DEPTH = 127;
 
   explicit BPF(unsigned int flag = 0, TableStorage* ts = nullptr,
-               bool rw_engine_enabled = true)
-      : flag_(flag), bpf_module_(new BPFModule(flag, ts, rw_engine_enabled)) {}
+               bool rw_engine_enabled = bpf_module_rw_engine_enabled(),
+               const std::string &maps_ns = "",
+               bool allow_rlimit = true)
+      : flag_(flag),
+        bsymcache_(NULL),
+        bpf_module_(new BPFModule(flag, ts, rw_engine_enabled, maps_ns,
+                    allow_rlimit)) {}
   StatusTuple init(const std::string& bpf_program,
                    const std::vector<std::string>& cflags = {},
                    const std::vector<USDT>& usdt = {});
@@ -57,9 +63,9 @@ class BPF {
 
   StatusTuple attach_kprobe(const std::string& kernel_func,
                             const std::string& probe_func,
+                            uint64_t kernel_func_offset = 0,
                             bpf_probe_attach_type = BPF_PROBE_ENTRY,
-                            perf_reader_cb cb = nullptr,
-                            void* cb_cookie = nullptr);
+                            int maxactive = 0);
   StatusTuple detach_kprobe(
       const std::string& kernel_func,
       bpf_probe_attach_type attach_type = BPF_PROBE_ENTRY);
@@ -69,19 +75,16 @@ class BPF {
                             const std::string& probe_func,
                             uint64_t symbol_addr = 0,
                             bpf_probe_attach_type attach_type = BPF_PROBE_ENTRY,
-                            pid_t pid = -1, perf_reader_cb cb = nullptr,
-                            void* cb_cookie = nullptr);
+                            pid_t pid = -1);
   StatusTuple detach_uprobe(const std::string& binary_path,
                             const std::string& symbol, uint64_t symbol_addr = 0,
                             bpf_probe_attach_type attach_type = BPF_PROBE_ENTRY,
                             pid_t pid = -1);
   StatusTuple attach_usdt(const USDT& usdt, pid_t pid = -1);
-  StatusTuple detach_usdt(const USDT& usdt);
+  StatusTuple detach_usdt(const USDT& usdt, pid_t pid = -1);
 
   StatusTuple attach_tracepoint(const std::string& tracepoint,
-                                const std::string& probe_func,
-                                perf_reader_cb cb = nullptr,
-                                void* cb_cookie = nullptr);
+                                const std::string& probe_func);
   StatusTuple detach_tracepoint(const std::string& tracepoint);
 
   StatusTuple attach_perf_event(uint32_t ev_type, uint32_t ev_config,
@@ -89,7 +92,14 @@ class BPF {
                                 uint64_t sample_period, uint64_t sample_freq,
                                 pid_t pid = -1, int cpu = -1,
                                 int group_fd = -1);
+  StatusTuple attach_perf_event_raw(void* perf_event_attr,
+                                    const std::string& probe_func,
+                                    pid_t pid = -1, int cpu = -1,
+                                    int group_fd = -1,
+                                    unsigned long extra_flags = 0);
   StatusTuple detach_perf_event(uint32_t ev_type, uint32_t ev_config);
+  StatusTuple detach_perf_event_raw(void* perf_event_attr);
+  std::string get_syscall_fnname(const std::string& name);
 
   BPFTable get_table(const std::string& name) {
     TableStorage::iterator it;
@@ -106,6 +116,15 @@ class BPF {
     return BPFArrayTable<ValueType>({});
   }
 
+  template <class ValueType>
+  BPFPercpuArrayTable<ValueType> get_percpu_array_table(
+      const std::string& name) {
+    TableStorage::iterator it;
+    if (bpf_module_->table_storage().Find(Path({bpf_module_->id(), name}), it))
+      return BPFPercpuArrayTable<ValueType>(it->second);
+    return BPFPercpuArrayTable<ValueType>({});
+  }
+
   template <class KeyType, class ValueType>
   BPFHashTable<KeyType, ValueType> get_hash_table(const std::string& name) {
     TableStorage::iterator it;
@@ -114,27 +133,68 @@ class BPF {
     return BPFHashTable<KeyType, ValueType>({});
   }
 
+  template <class KeyType, class ValueType>
+  BPFPercpuHashTable<KeyType, ValueType> get_percpu_hash_table(
+      const std::string& name) {
+    TableStorage::iterator it;
+    if (bpf_module_->table_storage().Find(Path({bpf_module_->id(), name}), it))
+      return BPFPercpuHashTable<KeyType, ValueType>(it->second);
+    return BPFPercpuHashTable<KeyType, ValueType>({});
+  }
+
+  void* get_bsymcache(void) {
+    if (bsymcache_ == NULL) {
+      bsymcache_ = bcc_buildsymcache_new();
+    }
+    return bsymcache_;
+  }
+
   BPFProgTable get_prog_table(const std::string& name);
+
+  BPFCgroupArray get_cgroup_array(const std::string& name);
+
+  BPFDevmapTable get_devmap_table(const std::string& name);
 
   BPFStackTable get_stack_table(const std::string& name,
                                 bool use_debug_file = true,
                                 bool check_debug_file_crc = true);
+
+  BPFStackBuildIdTable get_stackbuildid_table(const std::string &name,
+                                              bool use_debug_file = true,
+                                              bool check_debug_file_crc = true);
+
+  bool add_module(std::string module);
 
   StatusTuple open_perf_event(const std::string& name, uint32_t type,
                               uint64_t config);
 
   StatusTuple close_perf_event(const std::string& name);
 
+  // Open a Perf Buffer of given name, providing callback and callback cookie
+  // to use when polling. BPF class owns the opened Perf Buffer and will free
+  // it on-demand or on destruction.
   StatusTuple open_perf_buffer(const std::string& name, perf_reader_raw_cb cb,
                                perf_reader_lost_cb lost_cb = nullptr,
                                void* cb_cookie = nullptr,
                                int page_cnt = DEFAULT_PERF_BUFFER_PAGE_CNT);
+  // Close and free the Perf Buffer of given name.
   StatusTuple close_perf_buffer(const std::string& name);
-  void poll_perf_buffer(const std::string& name, int timeout = -1);
+  // Obtain an pointer to the opened BPFPerfBuffer instance of given name.
+  // Will return nullptr if such open Perf Buffer doesn't exist.
+  BPFPerfBuffer* get_perf_buffer(const std::string& name);
+  // Poll an opened Perf Buffer of given name with given timeout, using callback
+  // provided when opening. Do nothing if such open Perf Buffer doesn't exist.
+  // Returns:
+  //   -1 on error or if perf buffer with such name doesn't exist;
+  //   0, if no data was available before timeout;
+  //   number of CPUs that have new data, otherwise.
+  int poll_perf_buffer(const std::string& name, int timeout_ms = -1);
 
   StatusTuple load_func(const std::string& func_name, enum bpf_prog_type type,
                         int& fd);
   StatusTuple unload_func(const std::string& func_name);
+
+  int free_bcc_memory();
 
  private:
   std::string get_kprobe_event(const std::string& kernel_func,
@@ -183,6 +243,10 @@ class BPF {
 
   int flag_;
 
+  void *bsymcache_;
+
+  std::unique_ptr<std::string> syscall_prefix_;
+
   std::unique_ptr<BPFModule> bpf_module_;
 
   std::map<std::string, int> funcs_;
@@ -200,35 +264,56 @@ class BPF {
 class USDT {
  public:
   USDT(const std::string& binary_path, const std::string& provider,
-       const std::string& name, const std::string& probe_func)
-      : initialized_(false),
-        binary_path_(binary_path),
-        provider_(provider),
-        name_(name),
-        probe_func_(probe_func) {}
+       const std::string& name, const std::string& probe_func);
+  USDT(pid_t pid, const std::string& provider, const std::string& name,
+       const std::string& probe_func);
+  USDT(const std::string& binary_path, pid_t pid, const std::string& provider,
+       const std::string& name, const std::string& probe_func);
+  USDT(const USDT& usdt);
+  USDT(USDT&& usdt) noexcept;
 
-  bool operator==(const USDT& other) const {
-    return (provider_ == other.provider_) && (name_ == other.name_) &&
-           (binary_path_ == other.binary_path_) &&
-           (probe_func_ == other.probe_func_);
-  }
+  StatusTuple init();
+
+  bool operator==(const USDT& other) const;
 
   std::string print_name() const {
-    return provider_ + ":" + name_ + " from " + binary_path_;
+    return provider_ + ":" + name_ + " from binary " + binary_path_ + " PID " +
+           std::to_string(pid_) + " for probe " + probe_func_;
   }
 
+  friend std::ostream& operator<<(std::ostream& out, const USDT& usdt) {
+    return out << usdt.provider_ << ":" << usdt.name_ << " from binary "
+               << usdt.binary_path_ << " PID " << usdt.pid_ << " for probe "
+               << usdt.probe_func_;
+  }
+
+  // When the kludge flag is set to 1, we will only match on inode
+  // when searching for modules in /proc/PID/maps that might contain the
+  // tracepoint we're looking for. Normally match is on inode and
+  // (dev_major, dev_minor), which is a more accurate way to uniquely
+  // identify a file.
+  //
+  // This hack exists because btrfs reports different device numbers for files
+  // in /proc/PID/maps vs stat syscall. Don't use it unless you're using btrfs
+  //
+  // set_probe_matching_kludge(1) must be called before USDTs are submitted to
+  // BPF::init()
+  int set_probe_matching_kludge(uint8_t kludge);
+
  private:
-  StatusTuple init();
   bool initialized_;
 
   std::string binary_path_;
+  pid_t pid_;
+
   std::string provider_;
   std::string name_;
   std::string probe_func_;
 
-  std::vector<uintptr_t> addresses_;
-
+  std::unique_ptr<void, std::function<void(void*)>> probe_;
   std::string program_text_;
+
+  uint8_t mod_match_inode_only_;
 
   friend class BPF;
 };

@@ -70,7 +70,9 @@ ClangLoader::ClangLoader(llvm::LLVMContext *ctx, unsigned flags)
     : ctx_(ctx), flags_(flags)
 {
   for (auto f : ExportedFiles::headers())
-    remapped_files_[f.first] = llvm::MemoryBuffer::getMemBuffer(f.second);
+    remapped_headers_[f.first] = llvm::MemoryBuffer::getMemBuffer(f.second);
+  for (auto f : ExportedFiles::footers())
+    remapped_footers_[f.first] = llvm::MemoryBuffer::getMemBuffer(f.second);
 }
 
 ClangLoader::~ClangLoader() {}
@@ -100,19 +102,38 @@ std::pair<bool, string> get_kernel_path_info(const string kdir)
   return std::make_pair(false, "build");
 }
 
+static int CreateFromArgs(clang::CompilerInvocation &invocation,
+                          const llvm::opt::ArgStringList &ccargs,
+                          clang::DiagnosticsEngine &diags)
+{
+#if LLVM_MAJOR_VERSION >= 10
+  return clang::CompilerInvocation::CreateFromArgs(invocation, ccargs, diags);
+#else
+  return clang::CompilerInvocation::CreateFromArgs(
+              invocation, const_cast<const char **>(ccargs.data()),
+              const_cast<const char **>(ccargs.data()) + ccargs.size(), diags);
+#endif
+}
+
 }
 
 int ClangLoader::parse(unique_ptr<llvm::Module> *mod, TableStorage &ts,
                        const string &file, bool in_memory, const char *cflags[],
                        int ncflags, const std::string &id, FuncSource &func_src,
-                       std::string &mod_src) {
+                       std::string &mod_src,
+                       const std::string &maps_ns,
+                       fake_fd_map_def &fake_fd_map,
+                       std::map<std::string, std::vector<std::string>> &perf_events) {
   string main_path = "/virtual/main.c";
   unique_ptr<llvm::MemoryBuffer> main_buf;
   struct utsname un;
   uname(&un);
   string kdir, kpath;
   const char *kpath_env = ::getenv("BCC_KERNEL_SOURCE");
+  const char *version_override = ::getenv("BCC_LINUX_VERSION_CODE");
   bool has_kpath_source = false;
+  string vmacro;
+  std::string tmpdir;
 
   if (kpath_env) {
     kpath = string(kpath_env);
@@ -121,6 +142,17 @@ int ClangLoader::parse(unique_ptr<llvm::Module> *mod, TableStorage &ts,
     auto kernel_path_info = get_kernel_path_info(kdir);
     has_kpath_source = kernel_path_info.first;
     kpath = kdir + "/" + kernel_path_info.second;
+  }
+
+  // If all attempts to obtain kheaders fail, check for kheaders.tar.xz in sysfs
+  if (!is_dir(kpath)) {
+    int ret = get_proc_kheaders(tmpdir);
+    if (!ret) {
+      kpath = tmpdir;
+    } else {
+      std::cout << "Unable to find kernel headers. ";
+      std::cout << "Try rebuilding kernel with CONFIG_IKHEADERS=m (module)\n";
+    }
   }
 
   if (flags_ & DEBUG_PREPROCESSOR)
@@ -147,7 +179,11 @@ int ClangLoader::parse(unique_ptr<llvm::Module> *mod, TableStorage &ts,
   // Enable -O2 for clang. In clang 5.0, -O0 may result in function marking as
   // noinline and optnone (if not always inlining).
   // Note that first argument is ignored in clang compilation invocation.
+  // "-D __BPF_TRACING__" below is added to suppress a warning in 4.17+.
+  // It can be removed once clang supports asm-goto or the kernel removes
+  // the warning.
   vector<const char *> flags_cstr({"-O0", "-O2", "-emit-llvm", "-I", dstack.cwd(),
+                                   "-D", "__BPF_TRACING__",
                                    "-Wno-deprecated-declarations",
                                    "-Wno-gnu-variable-sized-type-not-at-end",
                                    "-Wno-pragma-once-outside-header",
@@ -163,12 +199,25 @@ int ClangLoader::parse(unique_ptr<llvm::Module> *mod, TableStorage &ts,
   vector<string> kflags;
   if (kbuild_helper.get_flags(un.machine, &kflags))
     return -1;
+#if LLVM_MAJOR_VERSION >= 9
+  flags_cstr.push_back("-g");
+#else
   if (flags_ & DEBUG_SOURCE)
     flags_cstr.push_back("-g");
+#endif
   for (auto it = kflags.begin(); it != kflags.end(); ++it)
     flags_cstr.push_back(it->c_str());
 
   vector<const char *> flags_cstr_rem;
+
+  if (version_override) {
+    vmacro = "-DLINUX_VERSION_CODE_OVERRIDE=" + string(version_override);
+
+    std::cout << "WARNING: Linux version for eBPF program is being overridden with: " << version_override << "\n";
+    std::cout << "WARNING: Due to this, the results of the program may be unpredictable\n";
+    flags_cstr_rem.push_back(vmacro.c_str());
+  }
+
   flags_cstr_rem.push_back("-include");
   flags_cstr_rem.push_back("/virtual/include/bcc/helpers.h");
   flags_cstr_rem.push_back("-isystem");
@@ -183,7 +232,7 @@ int ClangLoader::parse(unique_ptr<llvm::Module> *mod, TableStorage &ts,
 #endif
 
   if (do_compile(mod, ts, in_memory, flags_cstr, flags_cstr_rem, main_path,
-                 main_buf, id, func_src, mod_src, true)) {
+                 main_buf, id, func_src, mod_src, true, maps_ns, fake_fd_map, perf_events)) {
 #if BCC_BACKUP_COMPILE != 1
     return -1;
 #else
@@ -193,8 +242,9 @@ int ClangLoader::parse(unique_ptr<llvm::Module> *mod, TableStorage &ts,
     ts.DeletePrefix(Path({id}));
     func_src.clear();
     mod_src.clear();
+    fake_fd_map.clear();
     if (do_compile(mod, ts, in_memory, flags_cstr, flags_cstr_rem, main_path,
-                   main_buf, id, func_src, mod_src, false))
+                   main_buf, id, func_src, mod_src, false, maps_ns, fake_fd_map, perf_events))
       return -1;
 #endif
   }
@@ -240,7 +290,10 @@ int ClangLoader::do_compile(unique_ptr<llvm::Module> *mod, TableStorage &ts,
                             const std::string &main_path,
                             const unique_ptr<llvm::MemoryBuffer> &main_buf,
                             const std::string &id, FuncSource &func_src,
-                            std::string &mod_src, bool use_internal_bpfh) {
+                            std::string &mod_src, bool use_internal_bpfh,
+                            const std::string &maps_ns,
+                            fake_fd_map_def &fake_fd_map,
+                            std::map<std::string, std::vector<std::string>> &perf_events) {
   using namespace clang;
 
   vector<const char *> flags_cstr = flags_cstr_in;
@@ -287,7 +340,7 @@ int ClangLoader::do_compile(unique_ptr<llvm::Module> *mod, TableStorage &ts,
   }
 
   // Initialize a compiler invocation object from the clang (-cc1) arguments.
-  const driver::ArgStringList &ccargs = cmd.getArguments();
+  const llvm::opt::ArgStringList &ccargs = cmd.getArguments();
 
   if (flags_ & DEBUG_PREPROCESSOR) {
     llvm::errs() << "clang";
@@ -299,13 +352,13 @@ int ClangLoader::do_compile(unique_ptr<llvm::Module> *mod, TableStorage &ts,
   // pre-compilation pass for generating tracepoint structures
   CompilerInstance compiler0;
   CompilerInvocation &invocation0 = compiler0.getInvocation();
-  if (!CompilerInvocation::CreateFromArgs(
-          invocation0, const_cast<const char **>(ccargs.data()),
-          const_cast<const char **>(ccargs.data()) + ccargs.size(), diags))
+  if (!CreateFromArgs(invocation0, ccargs, diags))
     return -1;
 
   invocation0.getPreprocessorOpts().RetainRemappedFileBuffers = true;
-  for (const auto &f : remapped_files_)
+  for (const auto &f : remapped_headers_)
+    invocation0.getPreprocessorOpts().addRemappedFile(f.first, &*f.second);
+  for (const auto &f : remapped_footers_)
     invocation0.getPreprocessorOpts().addRemappedFile(f.first, &*f.second);
 
   if (in_memory) {
@@ -328,16 +381,16 @@ int ClangLoader::do_compile(unique_ptr<llvm::Module> *mod, TableStorage &ts,
   // first pass
   CompilerInstance compiler1;
   CompilerInvocation &invocation1 = compiler1.getInvocation();
-  if (!CompilerInvocation::CreateFromArgs(
-          invocation1, const_cast<const char **>(ccargs.data()),
-          const_cast<const char **>(ccargs.data()) + ccargs.size(), diags))
+  if (!CreateFromArgs( invocation1, ccargs, diags))
     return -1;
 
   // This option instructs clang whether or not to free the file buffers that we
   // give to it. Since the embedded header files should be copied fewer times
   // and reused if possible, set this flag to true.
   invocation1.getPreprocessorOpts().RetainRemappedFileBuffers = true;
-  for (const auto &f : remapped_files_)
+  for (const auto &f : remapped_headers_)
+    invocation1.getPreprocessorOpts().addRemappedFile(f.first, &*f.second);
+  for (const auto &f : remapped_footers_)
     invocation1.getPreprocessorOpts().addRemappedFile(f.first, &*f.second);
   invocation1.getPreprocessorOpts().addRemappedFile(main_path, &*out_buf);
   invocation1.getFrontendOpts().Inputs.clear();
@@ -350,7 +403,8 @@ int ClangLoader::do_compile(unique_ptr<llvm::Module> *mod, TableStorage &ts,
   // capture the rewritten c file
   string out_str1;
   llvm::raw_string_ostream os1(out_str1);
-  BFrontendAction bact(os1, flags_, ts, id, main_path, func_src, mod_src);
+  BFrontendAction bact(os1, flags_, ts, id, main_path, func_src, mod_src,
+                       maps_ns, fake_fd_map, perf_events);
   if (!compiler1.ExecuteAction(bact))
     return -1;
   unique_ptr<llvm::MemoryBuffer> out_buf1 = llvm::MemoryBuffer::getMemBuffer(out_str1);
@@ -358,12 +412,13 @@ int ClangLoader::do_compile(unique_ptr<llvm::Module> *mod, TableStorage &ts,
   // second pass, clear input and take rewrite buffer
   CompilerInstance compiler2;
   CompilerInvocation &invocation2 = compiler2.getInvocation();
-  if (!CompilerInvocation::CreateFromArgs(
-          invocation2, const_cast<const char **>(ccargs.data()),
-          const_cast<const char **>(ccargs.data()) + ccargs.size(), diags))
+  if (!CreateFromArgs(invocation2, ccargs, diags))
     return -1;
+
   invocation2.getPreprocessorOpts().RetainRemappedFileBuffers = true;
-  for (const auto &f : remapped_files_)
+  for (const auto &f : remapped_headers_)
+    invocation2.getPreprocessorOpts().addRemappedFile(f.first, &*f.second);
+  for (const auto &f : remapped_footers_)
     invocation2.getPreprocessorOpts().addRemappedFile(f.first, &*f.second);
   invocation2.getPreprocessorOpts().addRemappedFile(main_path, &*out_buf1);
   invocation2.getFrontendOpts().Inputs.clear();

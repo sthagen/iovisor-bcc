@@ -15,6 +15,7 @@
  */
 
 #include <linux/bpf.h>
+#include <linux/perf_event.h>
 #include <unistd.h>
 #include <cstdio>
 #include <cstring>
@@ -26,11 +27,13 @@
 #include <vector>
 
 #include "bcc_exception.h"
+#include "bcc_elf.h"
 #include "bcc_syms.h"
 #include "bpf_module.h"
 #include "common.h"
 #include "libbpf.h"
 #include "perf_reader.h"
+#include "syms.h"
 #include "table_storage.h"
 #include "usdt.h"
 
@@ -57,11 +60,13 @@ StatusTuple BPF::init(const std::string& bpf_program,
                       const std::vector<USDT>& usdt) {
   std::string all_bpf_program;
 
-  for (auto u : usdt) {
-    if (!u.initialized_)
-      TRY2(u.init());
+  usdt_.reserve(usdt.size());
+  for (const auto& u : usdt) {
+    usdt_.emplace_back(u);
+  }
+  for (auto& u : usdt_) {
+    TRY2(u.init());
     all_bpf_program += u.program_text_;
-    usdt_.push_back(std::move(u));
   }
 
   auto flags_len = cflags.size();
@@ -81,6 +86,8 @@ BPF::~BPF() {
   if (res.code() != 0)
     std::cerr << "Failed to detach all probes on destruction: " << std::endl
               << res.msg() << std::endl;
+  bcc_free_buildsymcache(bsymcache_);
+  bsymcache_ = NULL;
 }
 
 StatusTuple BPF::detach_all() {
@@ -159,8 +166,9 @@ StatusTuple BPF::detach_all() {
 
 StatusTuple BPF::attach_kprobe(const std::string& kernel_func,
                                const std::string& probe_func,
+                               uint64_t kernel_func_offset,
                                bpf_probe_attach_type attach_type,
-                               perf_reader_cb cb, void* cb_cookie) {
+                               int maxactive) {
   std::string probe_event = get_kprobe_event(kernel_func, attach_type);
   if (kprobes_.find(probe_event) != kprobes_.end())
     return StatusTuple(-1, "kprobe %s already attached", probe_event.c_str());
@@ -168,10 +176,11 @@ StatusTuple BPF::attach_kprobe(const std::string& kernel_func,
   int probe_fd;
   TRY2(load_func(probe_func, BPF_PROG_TYPE_KPROBE, probe_fd));
 
-  void* res = bpf_attach_kprobe(probe_fd, attach_type, probe_event.c_str(),
-                                kernel_func.c_str(), cb, cb_cookie);
+  int res_fd = bpf_attach_kprobe(probe_fd, attach_type, probe_event.c_str(),
+                                 kernel_func.c_str(), kernel_func_offset,
+                                 maxactive);
 
-  if (!res) {
+  if (res_fd < 0) {
     TRY2(unload_func(probe_func));
     return StatusTuple(-1, "Unable to attach %skprobe for %s using %s",
                        attach_type_debug(attach_type).c_str(),
@@ -179,7 +188,7 @@ StatusTuple BPF::attach_kprobe(const std::string& kernel_func,
   }
 
   open_probe_t p = {};
-  p.reader_ptr = res;
+  p.perf_event_fd = res_fd;
   p.func = probe_func;
   kprobes_[probe_event] = std::move(p);
   return StatusTuple(0);
@@ -189,8 +198,7 @@ StatusTuple BPF::attach_uprobe(const std::string& binary_path,
                                const std::string& symbol,
                                const std::string& probe_func,
                                uint64_t symbol_addr,
-                               bpf_probe_attach_type attach_type, pid_t pid,
-                               perf_reader_cb cb, void* cb_cookie) {
+                               bpf_probe_attach_type attach_type, pid_t pid) {
   std::string module;
   uint64_t offset;
   TRY2(check_binary_symbol(binary_path, symbol, symbol_addr, module, offset));
@@ -202,11 +210,10 @@ StatusTuple BPF::attach_uprobe(const std::string& binary_path,
   int probe_fd;
   TRY2(load_func(probe_func, BPF_PROG_TYPE_KPROBE, probe_fd));
 
-  void* res =
-      bpf_attach_uprobe(probe_fd, attach_type, probe_event.c_str(),
-                        binary_path.c_str(), offset, pid, cb, cb_cookie);
+  int res_fd = bpf_attach_uprobe(probe_fd, attach_type, probe_event.c_str(),
+                                 binary_path.c_str(), offset, pid);
 
-  if (!res) {
+  if (res_fd < 0) {
     TRY2(unload_func(probe_func));
     return StatusTuple(
         -1,
@@ -216,24 +223,29 @@ StatusTuple BPF::attach_uprobe(const std::string& binary_path,
   }
 
   open_probe_t p = {};
-  p.reader_ptr = res;
+  p.perf_event_fd = res_fd;
   p.func = probe_func;
   uprobes_[probe_event] = std::move(p);
   return StatusTuple(0);
 }
 
 StatusTuple BPF::attach_usdt(const USDT& usdt, pid_t pid) {
-  for (const auto& u : usdt_)
+  for (const auto& u : usdt_) {
     if (u == usdt) {
+      auto& probe = *static_cast<::USDT::Probe*>(u.probe_.get());
+      if (!probe.enable(u.probe_func_))
+        return StatusTuple(-1, "Unable to enable USDT " + u.print_name());
+
       bool failed = false;
       std::string err_msg;
       int cnt = 0;
-      for (auto addr : u.addresses_) {
-        auto res =
-            attach_uprobe(u.binary_path_, std::string(), u.probe_func_, addr);
+      for (const auto& loc : probe.locations_) {
+        auto res = attach_uprobe(loc.bin_path_, std::string(), u.probe_func_,
+                                 loc.address_, BPF_PROBE_ENTRY, pid);
         if (res.code() != 0) {
           failed = true;
-          err_msg += "USDT " + u.print_name() + " at " + std::to_string(addr);
+          err_msg += "USDT " + u.print_name() + " at " + loc.bin_path_ +
+                     " address " + std::to_string(loc.address_);
           err_msg += ": " + res.msg() + "\n";
           break;
         }
@@ -242,19 +254,23 @@ StatusTuple BPF::attach_usdt(const USDT& usdt, pid_t pid) {
       if (failed) {
         for (int i = 0; i < cnt; i++) {
           auto res =
-              detach_uprobe(u.binary_path_, std::string(), u.addresses_[i]);
-          err_msg += "During clean up: " + res.msg() + "\n";
+              detach_uprobe(probe.locations_[i].bin_path_, std::string(),
+                            probe.locations_[i].address_, BPF_PROBE_ENTRY, pid);
+          if (res.code() != 0)
+            err_msg += "During clean up: " + res.msg() + "\n";
         }
         return StatusTuple(-1, err_msg);
-      } else
+      } else {
         return StatusTuple(0);
+      }
     }
+  }
+
   return StatusTuple(-1, "USDT %s not found", usdt.print_name().c_str());
 }
 
 StatusTuple BPF::attach_tracepoint(const std::string& tracepoint,
-                                   const std::string& probe_func,
-                                   perf_reader_cb cb, void* cb_cookie) {
+                                   const std::string& probe_func) {
   if (tracepoints_.find(tracepoint) != tracepoints_.end())
     return StatusTuple(-1, "Tracepoint %s already attached",
                        tracepoint.c_str());
@@ -268,17 +284,17 @@ StatusTuple BPF::attach_tracepoint(const std::string& tracepoint,
   int probe_fd;
   TRY2(load_func(probe_func, BPF_PROG_TYPE_TRACEPOINT, probe_fd));
 
-  void* res = bpf_attach_tracepoint(probe_fd, tp_category.c_str(),
-                                    tp_name.c_str(), cb, cb_cookie);
+  int res_fd =
+      bpf_attach_tracepoint(probe_fd, tp_category.c_str(), tp_name.c_str());
 
-  if (!res) {
+  if (res_fd < 0) {
     TRY2(unload_func(probe_func));
     return StatusTuple(-1, "Unable to attach Tracepoint %s using %s",
                        tracepoint.c_str(), probe_func.c_str());
   }
 
   open_probe_t p = {};
-  p.reader_ptr = res;
+  p.perf_event_fd = res_fd;
   p.func = probe_func;
   tracepoints_[tracepoint] = std::move(p);
   return StatusTuple(0);
@@ -296,12 +312,13 @@ StatusTuple BPF::attach_perf_event(uint32_t ev_type, uint32_t ev_config,
   int probe_fd;
   TRY2(load_func(probe_func, BPF_PROG_TYPE_PERF_EVENT, probe_fd));
 
-  auto fds = new std::map<int, int>();
   std::vector<int> cpus;
   if (cpu >= 0)
     cpus.push_back(cpu);
   else
     cpus = get_online_cpus();
+  auto fds = new std::vector<std::pair<int, int>>();
+  fds->reserve(cpus.size());
   for (int i : cpus) {
     int fd = bpf_attach_perf_event(probe_fd, ev_type, ev_config, sample_period,
                                    sample_freq, pid, i, group_fd);
@@ -313,7 +330,48 @@ StatusTuple BPF::attach_perf_event(uint32_t ev_type, uint32_t ev_config,
       return StatusTuple(-1, "Failed to attach perf event type %d config %d",
                          ev_type, ev_config);
     }
-    fds->emplace(i, fd);
+    fds->emplace_back(i, fd);
+  }
+
+  open_probe_t p = {};
+  p.func = probe_func;
+  p.per_cpu_fd = fds;
+  perf_events_[ev_pair] = std::move(p);
+  return StatusTuple(0);
+}
+
+StatusTuple BPF::attach_perf_event_raw(void* perf_event_attr,
+                                       const std::string& probe_func, pid_t pid,
+                                       int cpu, int group_fd,
+                                       unsigned long extra_flags) {
+  auto attr = static_cast<struct perf_event_attr*>(perf_event_attr);
+  auto ev_pair = std::make_pair(attr->type, attr->config);
+  if (perf_events_.find(ev_pair) != perf_events_.end())
+    return StatusTuple(-1, "Perf event type %d config %d already attached",
+                       attr->type, attr->config);
+
+  int probe_fd;
+  TRY2(load_func(probe_func, BPF_PROG_TYPE_PERF_EVENT, probe_fd));
+
+  std::vector<int> cpus;
+  if (cpu >= 0)
+    cpus.push_back(cpu);
+  else
+    cpus = get_online_cpus();
+  auto fds = new std::vector<std::pair<int, int>>();
+  fds->reserve(cpus.size());
+  for (int i : cpus) {
+    int fd = bpf_attach_perf_event_raw(probe_fd, attr, pid, i, group_fd,
+                                       extra_flags);
+    if (fd < 0) {
+      for (const auto& it : *fds)
+        close(it.second);
+      delete fds;
+      TRY2(unload_func(probe_func));
+      return StatusTuple(-1, "Failed to attach perf event type %d config %d",
+                         attr->type, attr->config);
+    }
+    fds->emplace_back(i, fd);
   }
 
   open_probe_t p = {};
@@ -357,24 +415,35 @@ StatusTuple BPF::detach_uprobe(const std::string& binary_path,
   return StatusTuple(0);
 }
 
-StatusTuple BPF::detach_usdt(const USDT& usdt) {
-  for (const auto& u : usdt_)
+StatusTuple BPF::detach_usdt(const USDT& usdt, pid_t pid) {
+  for (const auto& u : usdt_) {
     if (u == usdt) {
+      auto& probe = *static_cast<::USDT::Probe*>(u.probe_.get());
       bool failed = false;
       std::string err_msg;
-      for (auto addr : u.addresses_) {
-        auto res = detach_uprobe(u.binary_path_, std::string(), addr);
+      for (const auto& loc : probe.locations_) {
+        auto res = detach_uprobe(loc.bin_path_, std::string(), loc.address_,
+                                 BPF_PROBE_ENTRY, pid);
         if (res.code() != 0) {
           failed = true;
-          err_msg += "USDT " + u.print_name() + " at " + std::to_string(addr);
+          err_msg += "USDT " + u.print_name() + " at " + loc.bin_path_ +
+                     " address " + std::to_string(loc.address_);
           err_msg += ": " + res.msg() + "\n";
         }
       }
+
+      if (!probe.disable()) {
+        failed = true;
+        err_msg += "Unable to disable USDT " + u.print_name();
+      }
+
       if (failed)
         return StatusTuple(-1, err_msg);
       else
         return StatusTuple(0);
     }
+  }
+
   return StatusTuple(-1, "USDT %s not found", usdt.print_name().c_str());
 }
 
@@ -396,6 +465,11 @@ StatusTuple BPF::detach_perf_event(uint32_t ev_type, uint32_t ev_config) {
   TRY2(detach_perf_event_all_cpu(it->second));
   perf_events_.erase(it);
   return StatusTuple(0);
+}
+
+StatusTuple BPF::detach_perf_event_raw(void* perf_event_attr) {
+  auto attr = static_cast<struct perf_event_attr*>(perf_event_attr);
+  return detach_perf_event(attr->type, attr->config);
 }
 
 StatusTuple BPF::open_perf_event(const std::string& name, uint32_t type,
@@ -447,11 +521,16 @@ StatusTuple BPF::close_perf_buffer(const std::string& name) {
   return StatusTuple(0);
 }
 
-void BPF::poll_perf_buffer(const std::string& name, int timeout) {
+BPFPerfBuffer* BPF::get_perf_buffer(const std::string& name) {
+  auto it = perf_buffers_.find(name);
+  return (it == perf_buffers_.end()) ? nullptr : it->second;
+}
+
+int BPF::poll_perf_buffer(const std::string& name, int timeout_ms) {
   auto it = perf_buffers_.find(name);
   if (it == perf_buffers_.end())
-    return;
-  it->second->poll(timeout);
+    return -1;
+  return it->second->poll(timeout_ms);
 }
 
 StatusTuple BPF::load_func(const std::string& func_name, bpf_prog_type type,
@@ -473,7 +552,7 @@ StatusTuple BPF::load_func(const std::string& func_name, bpf_prog_type type,
   else if (flag_ & DEBUG_BPF)
     log_level = 1;
 
-  fd = bpf_prog_load(type, func_name.c_str(),
+  fd = bpf_module_->bcc_func_load(type, func_name.c_str(),
                      reinterpret_cast<struct bpf_insn*>(func_start), func_size,
                      bpf_module_->license(), bpf_module_->kern_version(),
                      log_level, nullptr, 0);
@@ -481,8 +560,10 @@ StatusTuple BPF::load_func(const std::string& func_name, bpf_prog_type type,
   if (fd < 0)
     return StatusTuple(-1, "Failed to load %s: %d", func_name.c_str(), fd);
 
-  bpf_module_->annotate_prog_tag(
+  int ret = bpf_module_->annotate_prog_tag(
       func_name, fd, reinterpret_cast<struct bpf_insn*>(func_start), func_size);
+  if (ret < 0)
+    fprintf(stderr, "WARNING: cannot get prog tag, ignore saving source with program tag\n");
   funcs_[func_name] = fd;
   return StatusTuple(0);
 }
@@ -498,6 +579,22 @@ StatusTuple BPF::unload_func(const std::string& func_name) {
 
   funcs_.erase(it);
   return StatusTuple(0);
+}
+
+std::string BPF::get_syscall_fnname(const std::string& name) {
+  if (syscall_prefix_ == nullptr) {
+    KSyms ksym;
+    uint64_t addr;
+
+    if (ksym.resolve_name(nullptr, "sys_bpf", &addr))
+      syscall_prefix_.reset(new std::string("sys_"));
+    else if (ksym.resolve_name(nullptr, "__x64_sys_bpf", &addr))
+      syscall_prefix_.reset(new std::string("__x64_sys_"));
+    else
+      syscall_prefix_.reset(new std::string());
+  }
+
+  return *syscall_prefix_ + name;
 }
 
 StatusTuple BPF::check_binary_symbol(const std::string& binary_path,
@@ -537,12 +634,41 @@ BPFProgTable BPF::get_prog_table(const std::string& name) {
   return BPFProgTable({});
 }
 
+BPFCgroupArray BPF::get_cgroup_array(const std::string& name) {
+  TableStorage::iterator it;
+  if (bpf_module_->table_storage().Find(Path({bpf_module_->id(), name}), it))
+    return BPFCgroupArray(it->second);
+  return BPFCgroupArray({});
+}
+
+BPFDevmapTable BPF::get_devmap_table(const std::string& name) {
+  TableStorage::iterator it;
+  if (bpf_module_->table_storage().Find(Path({bpf_module_->id(), name}), it))
+    return BPFDevmapTable(it->second);
+  return BPFDevmapTable({});
+}
+
 BPFStackTable BPF::get_stack_table(const std::string& name, bool use_debug_file,
                                    bool check_debug_file_crc) {
   TableStorage::iterator it;
   if (bpf_module_->table_storage().Find(Path({bpf_module_->id(), name}), it))
     return BPFStackTable(it->second, use_debug_file, check_debug_file_crc);
   return BPFStackTable({}, use_debug_file, check_debug_file_crc);
+}
+
+BPFStackBuildIdTable BPF::get_stackbuildid_table(const std::string &name, bool use_debug_file,
+                                                 bool check_debug_file_crc) {
+  TableStorage::iterator it;
+
+  if (bpf_module_->table_storage().Find(Path({bpf_module_->id(), name}), it))
+    return BPFStackBuildIdTable(it->second, use_debug_file, check_debug_file_crc, get_bsymcache());
+  return BPFStackBuildIdTable({}, use_debug_file, check_debug_file_crc, get_bsymcache());
+}
+
+bool BPF::add_module(std::string module)
+{
+  return bcc_buildsymcache_add_module(get_bsymcache(), module.c_str()) != 0 ?
+    false : true;
 }
 
 std::string BPF::get_uprobe_event(const std::string& binary_path,
@@ -558,10 +684,7 @@ std::string BPF::get_uprobe_event(const std::string& binary_path,
 
 StatusTuple BPF::detach_kprobe_event(const std::string& event,
                                      open_probe_t& attr) {
-  if (attr.reader_ptr) {
-    perf_reader_free(attr.reader_ptr);
-    attr.reader_ptr = nullptr;
-  }
+  bpf_close_perf_event_fd(attr.perf_event_fd);
   TRY2(unload_func(attr.func));
   if (bpf_detach_kprobe(event.c_str()) < 0)
     return StatusTuple(-1, "Unable to detach kprobe %s", event.c_str());
@@ -570,10 +693,7 @@ StatusTuple BPF::detach_kprobe_event(const std::string& event,
 
 StatusTuple BPF::detach_uprobe_event(const std::string& event,
                                      open_probe_t& attr) {
-  if (attr.reader_ptr) {
-    perf_reader_free(attr.reader_ptr);
-    attr.reader_ptr = nullptr;
-  }
+  bpf_close_perf_event_fd(attr.perf_event_fd);
   TRY2(unload_func(attr.func));
   if (bpf_detach_uprobe(event.c_str()) < 0)
     return StatusTuple(-1, "Unable to detach uprobe %s", event.c_str());
@@ -582,10 +702,7 @@ StatusTuple BPF::detach_uprobe_event(const std::string& event,
 
 StatusTuple BPF::detach_tracepoint_event(const std::string& tracepoint,
                                          open_probe_t& attr) {
-  if (attr.reader_ptr) {
-    perf_reader_free(attr.reader_ptr);
-    attr.reader_ptr = nullptr;
-  }
+  bpf_close_perf_event_fd(attr.perf_event_fd);
   TRY2(unload_func(attr.func));
 
   // TODO: bpf_detach_tracepoint currently does nothing.
@@ -612,25 +729,113 @@ StatusTuple BPF::detach_perf_event_all_cpu(open_probe_t& attr) {
   return StatusTuple(0);
 }
 
-StatusTuple USDT::init() {
-  ::USDT::Context ctx(binary_path_);
-  if (!ctx.loaded())
-    return StatusTuple(-1, "Unable to load USDT " + print_name());
-  auto probe = ctx.get(provider_, name_);
-  if (probe == nullptr)
-    return StatusTuple(-1, "Unable to find USDT " + print_name());
+int BPF::free_bcc_memory() {
+  return bcc_free_memory();
+}
 
-  if (!probe->enable(probe_func_))
-    return StatusTuple(-1, "Failed to enable USDT " + print_name());
+USDT::USDT(const std::string& binary_path, const std::string& provider,
+           const std::string& name, const std::string& probe_func)
+    : initialized_(false),
+      binary_path_(binary_path),
+      pid_(-1),
+      provider_(provider),
+      name_(name),
+      probe_func_(probe_func),
+      mod_match_inode_only_(0) {}
+
+USDT::USDT(pid_t pid, const std::string& provider, const std::string& name,
+           const std::string& probe_func)
+    : initialized_(false),
+      binary_path_(),
+      pid_(pid),
+      provider_(provider),
+      name_(name),
+      probe_func_(probe_func),
+      mod_match_inode_only_(0) {}
+
+USDT::USDT(const std::string& binary_path, pid_t pid,
+           const std::string& provider, const std::string& name,
+           const std::string& probe_func)
+    : initialized_(false),
+      binary_path_(binary_path),
+      pid_(pid),
+      provider_(provider),
+      name_(name),
+      probe_func_(probe_func),
+      mod_match_inode_only_(0) {}
+
+USDT::USDT(const USDT& usdt)
+    : initialized_(false),
+      binary_path_(usdt.binary_path_),
+      pid_(usdt.pid_),
+      provider_(usdt.provider_),
+      name_(usdt.name_),
+      probe_func_(usdt.probe_func_),
+      mod_match_inode_only_(usdt.mod_match_inode_only_) {}
+
+USDT::USDT(USDT&& usdt) noexcept
+    : initialized_(usdt.initialized_),
+      binary_path_(std::move(usdt.binary_path_)),
+      pid_(usdt.pid_),
+      provider_(std::move(usdt.provider_)),
+      name_(std::move(usdt.name_)),
+      probe_func_(std::move(usdt.probe_func_)),
+      probe_(std::move(usdt.probe_)),
+      program_text_(std::move(usdt.program_text_)),
+      mod_match_inode_only_(usdt.mod_match_inode_only_) {
+  usdt.initialized_ = false;
+}
+
+bool USDT::operator==(const USDT& other) const {
+  return (provider_ == other.provider_) && (name_ == other.name_) &&
+         (binary_path_ == other.binary_path_) && (pid_ == other.pid_) &&
+         (probe_func_ == other.probe_func_);
+}
+
+int USDT::set_probe_matching_kludge(uint8_t kludge) {
+  if (kludge != 0 && kludge != 1)
+    return -1;
+
+  mod_match_inode_only_ = kludge;
+  return 0;
+}
+
+StatusTuple USDT::init() {
+  std::unique_ptr<::USDT::Context> ctx;
+  if (!binary_path_.empty() && pid_ > 0)
+    ctx.reset(new ::USDT::Context(pid_, binary_path_, mod_match_inode_only_));
+  else if (!binary_path_.empty())
+    ctx.reset(new ::USDT::Context(binary_path_, mod_match_inode_only_));
+  else if (pid_ > 0)
+    ctx.reset(new ::USDT::Context(pid_, mod_match_inode_only_));
+  else
+    return StatusTuple(-1, "No valid Binary Path or PID provided");
+
+  if (!ctx->loaded())
+    return StatusTuple(-1, "Unable to load USDT " + print_name());
+
+  auto deleter = [](void* probe) { delete static_cast<::USDT::Probe*>(probe); };
+  for (auto& p : ctx->probes_) {
+    if (p->provider_ == provider_ && p->name_ == name_) {
+      // Take ownership of the probe that we are interested in, and avoid it
+      // being destrcuted when we destruct the USDT::Context instance
+      probe_ = std::unique_ptr<void, std::function<void(void*)>>(p.release(),
+                                                                 deleter);
+      p.swap(ctx->probes_.back());
+      ctx->probes_.pop_back();
+      break;
+    }
+  }
+  if (!probe_)
+    return StatusTuple(-1, "Unable to find USDT " + print_name());
+  ctx.reset(nullptr);
+  auto& probe = *static_cast<::USDT::Probe*>(probe_.get());
+
   std::ostringstream stream;
-  if (!probe->usdt_getarg(stream))
+  if (!probe.usdt_getarg(stream, probe_func_))
     return StatusTuple(
         -1, "Unable to generate program text for USDT " + print_name());
   program_text_ = ::USDT::USDT_PROGRAM_HEADER + stream.str();
-
-  addresses_.reserve(probe->num_locations());
-  for (size_t i = 0; i < probe->num_locations(); i++)
-    addresses_.emplace_back(probe->address(i));
 
   initialized_ = true;
   return StatusTuple(0);

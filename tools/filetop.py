@@ -38,8 +38,8 @@ parser.add_argument("-C", "--noclear", action="store_true",
     help="don't clear the screen")
 parser.add_argument("-r", "--maxrows", default=20,
     help="maximum rows to print, default 20")
-parser.add_argument("-s", "--sort", default="rbytes",
-    choices=["reads", "writes", "rbytes", "wbytes"],
+parser.add_argument("-s", "--sort", default="all",
+    choices=["all", "reads", "writes", "rbytes", "wbytes"],
     help="sort column, default rbytes")
 parser.add_argument("-p", "--pid", type=int, metavar="PID", dest="tgid",
     help="trace this PID only")
@@ -60,7 +60,7 @@ debug = 0
 loadavg = "/proc/loadavg"
 
 # signal handler
-def signal_ignore(signal, frame):
+def signal_ignore(signal_value, frame):
     print()
 
 # define BPF program
@@ -100,14 +100,15 @@ static int do_entry(struct pt_regs *ctx, struct file *file,
     // skip I/O lacking a filename
     struct dentry *de = file->f_path.dentry;
     int mode = file->f_inode->i_mode;
-    if (de->d_name.len == 0 || TYPE_FILTER)
+    struct qstr d_name = de->d_name;
+    if (d_name.len == 0 || TYPE_FILTER)
         return 0;
 
     // store counts and sizes by pid & file
     struct info_t info = {.pid = pid};
     bpf_get_current_comm(&info.comm, sizeof(info.comm));
-    info.name_len = de->d_name.len;
-    bpf_probe_read(&info.name, sizeof(info.name), (void *)de->d_name.name);
+    info.name_len = d_name.len;
+    bpf_probe_read(&info.name, sizeof(info.name), d_name.name);
     if (S_ISREG(mode)) {
         info.type = 'R';
     } else if (S_ISSOCK(mode)) {
@@ -118,12 +119,14 @@ static int do_entry(struct pt_regs *ctx, struct file *file,
 
     struct val_t *valp, zero = {};
     valp = counts.lookup_or_init(&info, &zero);
-    if (is_read) {
-        valp->reads++;
-        valp->rbytes += count;
-    } else {
-        valp->writes++;
-        valp->wbytes += count;
+    if (valp) {
+        if (is_read) {
+            valp->reads++;
+            valp->rbytes += count;
+        } else {
+            valp->writes++;
+            valp->wbytes += count;
+        }
     }
 
     return 0;
@@ -158,16 +161,18 @@ if debug or args.ebpf:
 
 # initialize BPF
 b = BPF(text=bpf_text)
-b.attach_kprobe(event="__vfs_read", fn_name="trace_read_entry")
-try:
-    b.attach_kprobe(event="__vfs_write", fn_name="trace_write_entry")
-except:
-    # older kernels don't have __vfs_write so try vfs_write instead
-    b.attach_kprobe(event="vfs_write", fn_name="trace_write_entry")
+b.attach_kprobe(event="vfs_read", fn_name="trace_read_entry")
+b.attach_kprobe(event="vfs_write", fn_name="trace_write_entry")
 
 DNAME_INLINE_LEN = 32  # linux/dcache.h
 
 print('Tracing... Output every %d secs. Hit Ctrl-C to end' % interval)
+
+def sort_fn(counts):
+    if args.sort == "all":
+        return (counts[1].rbytes + counts[1].wbytes + counts[1].reads + counts[1].writes)
+    else:
+        return getattr(counts[1], args.sort)
 
 # output
 exiting = 0
@@ -191,16 +196,16 @@ while 1:
     counts = b.get_table("counts")
     line = 0
     for k, v in reversed(sorted(counts.items(),
-                                key=lambda counts:
-                                  getattr(counts[1], args.sort))):
-        name = k.name.decode()
+                                key=sort_fn)):
+        name = k.name.decode('utf-8', 'replace')
         if k.name_len > DNAME_INLINE_LEN:
             name = name[:-3] + "..."
 
         # print line
         print("%-6d %-16s %-6d %-6d %-7d %-7d %1s %s" % (k.pid,
-            k.comm.decode(), v.reads, v.writes, v.rbytes / 1024,
-            v.wbytes / 1024, k.type.decode(), name))
+            k.comm.decode('utf-8', 'replace'), v.reads, v.writes,
+            v.rbytes / 1024, v.wbytes / 1024,
+            k.type.decode('utf-8', 'replace'), name))
 
         line += 1
         if line >= maxrows:

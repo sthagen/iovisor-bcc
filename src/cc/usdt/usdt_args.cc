@@ -39,6 +39,7 @@ bool Argument::get_global_address(uint64_t *address, const std::string &binpath,
     static struct bcc_symbol_option default_option = {
       .use_debug_file = 1,
       .check_debug_file_crc = 1,
+      .lazy_symbolize = 1,
       .use_symbol_type = BCC_SYM_ALL_TYPES
     };
     return ProcSyms(*pid, &default_option)
@@ -268,6 +269,59 @@ bool ArgumentParser_powerpc64::parse(Argument *dest) {
       dest->base_register_name_ = "gpr[" + matches.str(1) + "]";
       dest->index_register_name_ = "gpr[" + matches.str(2) + "]";
       dest->scale_ = abs(*dest->arg_size_);
+    } else {
+      matched = false;
+    }
+  }
+
+  if (!matched) {
+    print_error(cur_pos_);
+    skip_until_whitespace_from(cur_pos_);
+    skip_whitespace_from(cur_pos_);
+    return false;
+  }
+
+  cur_pos_ += matches.length(0);
+  skip_whitespace_from(cur_pos_);
+  return true;
+}
+
+bool ArgumentParser_s390x::parse(Argument *dest) {
+  if (done())
+    return false;
+
+  bool matched;
+  std::cmatch matches;
+#define S390X_IMM "(-?[0-9]+)"
+  std::regex arg_n_regex("^" S390X_IMM "@");
+  // <imm>
+  std::regex arg_op_regex_imm("^" S390X_IMM "(?: +|$)");
+  // %r<N>
+#define S390X_REG "%r([0-9]|1[0-5])"
+  std::regex arg_op_regex_reg("^" S390X_REG "(?: +|$)");
+  // <disp>(%r<N>,%r<N>)
+  std::regex arg_op_regex_mem("^" S390X_IMM "?\\(" S390X_REG
+                              "(?:," S390X_REG ")?\\)(?: +|$)");
+#undef S390X_IMM
+#undef S390X_REG
+
+  matched = std::regex_search(arg_ + cur_pos_, matches, arg_n_regex);
+  if (matched) {
+    dest->arg_size_ = stoi(matches.str(1));
+    cur_pos_ += matches.length(0);
+
+    if (std::regex_search(arg_ + cur_pos_, matches, arg_op_regex_imm)) {
+      dest->constant_ = stoi(matches.str(1));
+    } else if (std::regex_search(arg_ + cur_pos_, matches, arg_op_regex_reg)) {
+      dest->base_register_name_ = "gprs[" + matches.str(1) + "]";
+    } else if (std::regex_search(arg_ + cur_pos_, matches, arg_op_regex_mem)) {
+      if (matches.length(1) > 0) {
+        dest->deref_offset_ = stoi(matches.str(1));
+      }
+      dest->base_register_name_ = "gprs[" + matches.str(2) + "]";
+      if (matches.length(3) > 0) {
+        dest->index_register_name_ = "gprs[" + matches.str(3) + "]";
+      }
     } else {
       matched = false;
     }

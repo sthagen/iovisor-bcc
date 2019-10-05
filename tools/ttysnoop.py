@@ -16,7 +16,6 @@
 
 from __future__ import print_function
 from bcc import BPF
-import ctypes as ct
 from subprocess import call
 import argparse
 from sys import argv
@@ -101,24 +100,19 @@ if debug or args.ebpf:
 # initialize BPF
 b = BPF(text=bpf_text)
 
-BUFSIZE = 256
-
-class Data(ct.Structure):
-    _fields_ = [
-        ("count", ct.c_int),
-        ("buf", ct.c_char * BUFSIZE)
-    ]
-
 if not args.noclear:
     call("clear")
 
 # process event
 def print_event(cpu, data, size):
-    event = ct.cast(data, ct.POINTER(Data)).contents
-    print("%s" % event.buf[0:event.count].decode(), end="")
+    event = b["events"].event(data)
+    print("%s" % event.buf[0:event.count].decode('utf-8', 'replace'), end="")
     sys.stdout.flush()
 
 # loop with callback to print_event
 b["events"].open_perf_buffer(print_event)
 while 1:
-    b.kprobe_poll()
+    try:
+        b.perf_buffer_poll()
+    except KeyboardInterrupt:
+        exit()

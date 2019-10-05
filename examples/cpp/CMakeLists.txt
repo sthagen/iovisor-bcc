@@ -3,6 +3,7 @@
 
 include_directories(${CMAKE_SOURCE_DIR}/src/cc)
 include_directories(${CMAKE_SOURCE_DIR}/src/cc/api)
+include_directories(${CMAKE_SOURCE_DIR}/src/cc/libbpf/include/uapi)
 
 option(INSTALL_CPP_EXAMPLES "Install C++ examples. Those binaries are statically linked and can take plenty of disk space" OFF)
 
@@ -27,6 +28,12 @@ target_link_libraries(LLCStat bcc-static)
 add_executable(FollyRequestContextSwitch FollyRequestContextSwitch.cc)
 target_link_libraries(FollyRequestContextSwitch bcc-static)
 
+add_executable(UseExternalMap UseExternalMap.cc)
+target_link_libraries(UseExternalMap bcc-static)
+
+add_executable(CGroupTest CGroupTest.cc)
+target_link_libraries(CGroupTest bcc-static)
+
 if(INSTALL_CPP_EXAMPLES)
   install (TARGETS HelloWorld DESTINATION share/bcc/examples/cpp)
   install (TARGETS CPUDistribution DESTINATION share/bcc/examples/cpp)
@@ -35,4 +42,8 @@ if(INSTALL_CPP_EXAMPLES)
   install (TARGETS RandomRead DESTINATION share/bcc/examples/cpp)
   install (TARGETS LLCStat DESTINATION share/bcc/examples/cpp)
   install (TARGETS FollyRequestContextSwitch DESTINATION share/bcc/examples/cpp)
+  install (TARGETS UseExternalMap DESTINATION share/bcc/examples/cpp)
+  install (TARGETS CGroupTest DESTINATION share/bcc/examples/cpp)
 endif(INSTALL_CPP_EXAMPLES)
+
+add_subdirectory(pyperf)

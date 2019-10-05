@@ -14,6 +14,8 @@ This guide is incomplete. If something feels missing, check the bcc and kernel s
         - [4. uprobes](#4-uprobes)
         - [5. uretprobes](#5-uretprobes)
         - [6. USDT probes](#6-usdt-probes)
+        - [7. Raw Tracepoints](#7-raw-tracepoints)
+        - [8. system call tracepoints](#8-system-call-tracepoints)
     - [Data](#data)
         - [1. bpf_probe_read()](#1-bpf_probe_read)
         - [2. bpf_probe_read_str()](#2-bpf_probe_read_str)
@@ -22,7 +24,8 @@ This guide is incomplete. If something feels missing, check the bcc and kernel s
         - [5. bpf_get_current_uid_gid()](#5-bpf_get_current_uid_gid)
         - [6. bpf_get_current_comm()](#6-bpf_get_current_comm)
         - [7. bpf_get_current_task()](#7-bpf_get_current_task)
-        - [8. bpf_log2l()](#8-bpflog2l)
+        - [8. bpf_log2l()](#8-bpf_log2l)
+        - [9. bpf_get_prandom_u32()](#9-bpf_get_prandom_u32)
     - [Debugging](#debugging)
         - [1. bpf_override_return()](#1-bpf_override_return)
     - [Output](#output)
@@ -39,15 +42,19 @@ This guide is incomplete. If something feels missing, check the bcc and kernel s
         - [7. BPF_PERCPU_ARRAY](#7-bpf_percpu_array)
         - [8. BPF_LPM_TRIE](#8-bpf_lpm_trie)
         - [9. BPF_PROG_ARRAY](#9-bpf_prog_array)
-        - [10. map.lookup()](#10-maplookup)
-        - [11. map.lookup_or_init()](#11-maplookup_or_init)
-        - [12. map.delete()](#12-mapdelete)
-        - [13. map.update()](#13-mapupdate)
-        - [14. map.insert()](#14-mapinsert)
-        - [15. map.increment()](#15-mapincrement)
-        - [16. map.get_stackid()](#16-mapget_stackid)
-        - [17. map.perf_read()](#17-mapperf_read)
-        - [18. map.call()](#18-mapcall)
+        - [10. BPF_DEVMAP](#10-bpf_devmap)
+        - [11. BPF_CPUMAP](#11-bpf_cpumap)
+        - [12. map.lookup()](#12-maplookup)
+        - [13. map.lookup_or_init()](#13-maplookup_or_init)
+        - [14. map.delete()](#14-mapdelete)
+        - [15. map.update()](#15-mapupdate)
+        - [16. map.insert()](#16-mapinsert)
+        - [17. map.increment()](#17-mapincrement)
+        - [18. map.get_stackid()](#18-mapget_stackid)
+        - [19. map.perf_read()](#19-mapperf_read)
+        - [20. map.call()](#20-mapcall)
+        - [21. map.redirect_map()](#21-mapredirect_map)
+    - [Licensing](#licensing)
 
 - [bcc Python](#bcc-python)
     - [Initialization](#initialization)
@@ -60,11 +67,12 @@ This guide is incomplete. If something feels missing, check the bcc and kernel s
         - [4. attach_uprobe()](#4-attach_uprobe)
         - [5. attach_uretprobe()](#5-attach_uretprobe)
         - [6. USDT.enable_probe()](#6-usdtenable_probe)
+        - [7. attach_raw_tracepoint()](#7-attach_raw_tracepoint)
     - [Debug Output](#debug-output)
         - [1. trace_print()](#1-trace_print)
         - [2. trace_fields()](#2-trace_fields)
     - [Output](#output)
-        - [1. kprobe_poll()](#1-kprobe_poll)
+        - [1. perf_buffer_poll()](#1-perf_buffer_poll)
     - [Maps](#maps)
         - [1. get_table()](#1-get_table)
         - [2. open_perf_buffer()](#2-open_perf_buffer)
@@ -81,6 +89,11 @@ This guide is incomplete. If something feels missing, check the bcc and kernel s
 
 - [BPF Errors](#bpf-errors)
     - [1. Invalid mem access](#1-invalid-mem-access)
+    - [2. Cannot call GPL only function from proprietary program](#2-cannot-call-gpl-only-function-from-proprietary-program)
+
+- [Environment Variables](#envvars)
+    - [1. kernel source directory](#1-kernel-source-directory)
+    - [2. kernel version overriding](#2-kernel-version-overriding)
 
 # BPF C
 
@@ -236,6 +249,69 @@ Examples in situ:
 [search /examples](https://github.com/iovisor/bcc/search?q=bpf_usdt_readarg+path%3Aexamples&type=Code),
 [search /tools](https://github.com/iovisor/bcc/search?q=bpf_usdt_readarg+path%3Atools&type=Code)
 
+### 7. Raw Tracepoints
+
+Syntax: RAW_TRACEPOINT_PROBE(*event*)
+
+This is a macro that instruments the raw tracepoint defined by *event*.
+
+The argument is a pointer to struct ```bpf_raw_tracepoint_args```, which is defined in [bpf.h](https://github.com/iovisor/bcc/blob/master/src/cc/compat/linux/bpf.h).  The struct field ```args``` contains all parameters of the raw tracepoint where you can found at linux tree [include/trace/events](https://github.com/torvalds/linux/tree/master/include/trace/events)
+directory.
+
+For example:
+```C
+RAW_TRACEPOINT_PROBE(sched_switch)
+{
+    // TP_PROTO(bool preempt, struct task_struct *prev, struct task_struct *next)
+    struct task_struct *prev = (struct task_struct *)ctx->args[1];
+    struct task_struct *next= (struct task_struct *)ctx->args[2];
+    s32 prev_tgid, next_tgid;
+
+    bpf_probe_read(&prev_tgid, sizeof(prev->tgid), &prev->tgid);
+    bpf_probe_read(&next_tgid, sizeof(next->tgid), &next->tgid);
+    bpf_trace_printk("%d -> %d\\n", prev_tgid, next_tgid);
+}
+```
+
+This instruments the sched:sched_switch tracepoint, and prints the prev and next tgid.
+
+Examples in situ:
+[search /tools](https://github.com/iovisor/bcc/search?q=RAW_TRACEPOINT_PROBE+path%3Atools&type=Code)
+
+### 8. system call tracepoints
+
+Syntax: ```syscall__SYSCALLNAME```
+
+```syscall__``` is a special prefix that creates a kprobe for the system call name provided as the remainder. You can use it by declaring a normal C function, then using the Python ```BPF.get_syscall_name(SYSCALLNAME)``` and ```BPF.attach_kprobe()``` to associate it.
+
+Arguments are specified on the function declaration: ```syscall__SYSCALLNAME(struct pt_regs *ctx, [, argument1 ...])```.
+
+For example:
+```C
+int syscall__execve(struct pt_regs *ctx,
+    const char __user *filename,
+    const char __user *const __user *__argv,
+    const char __user *const __user *__envp)
+{
+    [...]
+}
+```
+
+This instruments the execve system call.
+
+The first argument is always ```struct pt_regs *```, the remainder are the arguments to the function (they don't need to be specified, if you don't intend to use them).
+
+Corresponding Python code:
+```Python
+b = BPF(text=bpf_text)
+execve_fnname = b.get_syscall_name("execve")
+b.attach_kprobe(event=execve_fnname, fn_name="syscall__execve")
+```
+
+Examples in situ:
+[code](https://github.com/iovisor/bcc/blob/552658edda09298afdccc8a4b5e17311a2d8a771/tools/execsnoop.py#L101) ([output](https://github.com/iovisor/bcc/blob/552658edda09298afdccc8a4b5e17311a2d8a771/tools/execsnoop_example.txt#L8))
+
+
 ## Data
 
 ### 1. bpf_probe_read()
@@ -255,7 +331,7 @@ Examples in situ:
 Syntax: ```int bpf_probe_read_str(void *dst, int size, const void *src)```
 
 Return:
-  - \> 0 length of the string including the trailing NUL on success
+  - \> 0 length of the string including the trailing NULL on success
   - \< 0 error
 
 This copies a `NULL` terminated string from memory location to BPF stack, so that BPF can later operate on it. In case the string length is smaller than size, the target is not padded with further `NULL` bytes. In case the string length is larger than size, just `size - 1` bytes are copied and the last byte is set to `NULL`.
@@ -352,6 +428,16 @@ Examples in situ:
 [search /examples](https://github.com/iovisor/bcc/search?q=bpf_log2l+path%3Aexamples&type=Code),
 [search /tools](https://github.com/iovisor/bcc/search?q=bpf_log2l+path%3Atools&type=Code)
 
+### 9. bpf_get_prandom_u32()
+
+Syntax: ```u32 bpf_get_prandom_u32()```
+
+Returns a pseudo-random u32.
+
+Example in situ:
+[search /examples](https://github.com/iovisor/bcc/search?q=bpf_get_prandom_u32+path%3Aexamples&type=Code),
+[search /tools](https://github.com/iovisor/bcc/search?q=bpf_get_prandom_u32+path%3Atools&type=Code)
+
 ## Debugging
 
 ### 1. bpf_override_return()
@@ -362,11 +448,11 @@ Return: 0 on success
 
 When used in a program attached to a function entry kprobe, causes the
 execution of the function to be skipped, immediately returning `rc` instead.
-This is used for targeted error injection. 
+This is used for targeted error injection.
 
 bpf_override_return will only work when the kprobed function is whitelisted to
 allow error injections. Whitelisting entails tagging a function with
-`BPF_ALLOW_ERROR_INJECTION()` in the kernel source tree; see `io_ctl_init` for
+`ALLOW_ERROR_INJECTION()` in the kernel source tree; see `io_ctl_init` for
 an example. If the kprobed function is not whitelisted, the bpf program will
 fail to attach with ` ioctl(PERF_EVENT_IOC_SET_BPF): Invalid argument`
 
@@ -382,11 +468,11 @@ int kprobe__io_ctl_init(void *ctx) {
 
 ### 1. bpf_trace_printk()
 
-Syntax: ```int bpf_trace_printk(const char *fmt, int fmt_size, ...)```
+Syntax: ```int bpf_trace_printk(const char *fmt, ...)```
 
 Return: 0 on success
 
-A simple kernel facility for printf() to the common trace_pipe (/sys/kernel/debug/tracing/trace_pipe). This is ok for some quick examples, but has limitations: 3 args max, 1 %s only, and trace_pipe is globally shared, so concurrent programs will have clashing output. A better interface is via BPF_PERF_OUTPUT().
+A simple kernel facility for printf() to the common trace_pipe (/sys/kernel/debug/tracing/trace_pipe). This is ok for some quick examples, but has limitations: 3 args max, 1 %s only, and trace_pipe is globally shared, so concurrent programs will have clashing output. A better interface is via BPF_PERF_OUTPUT(). Note that calling this helper is made simpler than the original kernel version, which has ```fmt_size``` as the second parameter.
 
 Examples in situ:
 [search /examples](https://github.com/iovisor/bcc/search?q=bpf_trace_printk+path%3Aexamples&type=Code),
@@ -435,6 +521,8 @@ Return: 0 on success
 
 A method of a BPF_PERF_OUTPUT table, for submitting custom event data to user space. See the BPF_PERF_OUTPUT entry. (This ultimately calls bpf_perf_event_output().)
 
+The ```ctx``` parameter is provided in [kprobes](#1-kprobes) or [kretprobes](#2-kretprobes). For ```SCHED_CLS``` or ```SOCKET_FILTER``` programs, the ```struct __sk_buff *skb``` must be used instead.
+
 Examples in situ:
 [search /examples](https://github.com/iovisor/bcc/search?q=perf_submit+path%3Aexamples&type=Code),
 [search /tools](https://github.com/iovisor/bcc/search?q=perf_submit+path%3Atools&type=Code)
@@ -454,6 +542,17 @@ Methods (covered later): map.lookup(), map.lookup_or_init(), map.delete(), map.u
 Examples in situ:
 [search /examples](https://github.com/iovisor/bcc/search?q=BPF_TABLE+path%3Aexamples&type=Code),
 [search /tools](https://github.com/iovisor/bcc/search?q=BPF_TABLE+path%3Atools&type=Code)
+
+#### Pinned Maps
+
+Maps that were pinned to the BPF filesystem can be accessed through an extended syntax: ```BPF_TABLE_PINNED(_table_type, _key_type, _leaf_type, _name, _max_entries, "/sys/fs/bpf/xyz")```
+The type information is not enforced and the actual map type depends on the map that got pinned to the location.
+
+For example:
+
+```C
+BPF_TABLE_PINNED("hash", u64, u64, ids, 1024, "/sys/fs/bpf/ids");
+```
 
 ### 2. BPF_HASH
 
@@ -570,6 +669,9 @@ Syntax: ```BPF_PERCPU_ARRAY(name [, leaf_type [, size]])```
 
 Creates NUM_CPU int-indexed arrays which are optimized for fastest lookup and update, named ```name```, with optional parameters. Each CPU will have a separate copy of this array. The copies are not kept synchronized in any way.
 
+Note that due to limits defined in the kernel (in linux/mm/percpu.c), the ```leaf_type``` cannot have a size of more than 32KB.
+In other words, ```BPF_PERCPU_ARRAY``` elements cannot be larger than 32KB in size.
+
 
 Defaults: ```BPF_PERCPU_ARRAY(name, leaf_type=u64, size=10240)```
 
@@ -622,7 +724,39 @@ Examples in situ:
 [search /tests](https://github.com/iovisor/bcc/search?q=BPF_PROG_ARRAY+path%3Atests&type=Code),
 [assign fd](https://github.com/iovisor/bcc/blob/master/examples/networking/tunnel_monitor/monitor.py#L24-L26)
 
-### 10. map.lookup()
+### 10. BPF_DEVMAP
+
+Syntax: ```BPF_DEVMAP(name, size)```
+
+This creates a device map named ```name``` with ```size``` entries. Each entry of the map is an `ifindex` to a network interface. This map is only used in XDP.
+
+For example:
+```C
+BPF_DEVMAP(devmap, 10);
+```
+
+Methods (covered later): map.redirect_map().
+
+Examples in situ:
+[search /examples](https://github.com/iovisor/bcc/search?q=BPF_DEVMAP+path%3Aexamples&type=Code),
+
+### 11. BPF_CPUMAP
+
+Syntax: ```BPF_CPUMAP(name, size)```
+
+This creates a cpu map named ```name``` with ```size``` entries. The index of the map represents the CPU id and each entry is the size of the ring buffer allocated for the CPU. This map is only used in XDP.
+
+For example:
+```C
+BPF_CPUMAP(cpumap, 16);
+```
+
+Methods (covered later): map.redirect_map().
+
+Examples in situ:
+[search /examples](https://github.com/iovisor/bcc/search?q=BPF_CPUMAP+path%3Aexamples&type=Code),
+
+### 12. map.lookup()
 
 Syntax: ```*val map.lookup(&key)```
 
@@ -632,17 +766,17 @@ Examples in situ:
 [search /examples](https://github.com/iovisor/bcc/search?q=lookup+path%3Aexamples&type=Code),
 [search /tools](https://github.com/iovisor/bcc/search?q=lookup+path%3Atools&type=Code)
 
-### 11. map.lookup_or_init()
+### 13. map.lookup_or_init()
 
 Syntax: ```*val map.lookup_or_init(&key, &zero)```
 
-Lookup the key in the map, and return a pointer to its value if it exists, else initialize the key's value to the second argument. This is often used to initialize values to zero.
+Lookup the key in the map, and return a pointer to its value if it exists, else initialize the key's value to the second argument. This is often used to initialize values to zero. If the key cannot be inserted (e.g. the map is full) then NULL is returned.
 
 Examples in situ:
 [search /examples](https://github.com/iovisor/bcc/search?q=lookup_or_init+path%3Aexamples&type=Code),
 [search /tools](https://github.com/iovisor/bcc/search?q=lookup_or_init+path%3Atools&type=Code)
 
-### 12. map.delete()
+### 14. map.delete()
 
 Syntax: ```map.delete(&key)```
 
@@ -652,7 +786,7 @@ Examples in situ:
 [search /examples](https://github.com/iovisor/bcc/search?q=delete+path%3Aexamples&type=Code),
 [search /tools](https://github.com/iovisor/bcc/search?q=delete+path%3Atools&type=Code)
 
-### 13. map.update()
+### 15. map.update()
 
 Syntax: ```map.update(&key, &val)```
 
@@ -662,26 +796,27 @@ Examples in situ:
 [search /examples](https://github.com/iovisor/bcc/search?q=update+path%3Aexamples&type=Code),
 [search /tools](https://github.com/iovisor/bcc/search?q=update+path%3Atools&type=Code)
 
-### 14. map.insert()
+### 16. map.insert()
 
 Syntax: ```map.insert(&key, &val)```
 
 Associate the value in the second argument to the key, only if there was no previous value.
 
 Examples in situ:
-[search /examples](https://github.com/iovisor/bcc/search?q=insert+path%3Aexamples&type=Code)
+[search /examples](https://github.com/iovisor/bcc/search?q=insert+path%3Aexamples&type=Code),
+[search /tools](https://github.com/iovisor/bcc/search?q=insert+path%3Atools&type=Code)
 
-### 15. map.increment()
+### 17. map.increment()
 
-Syntax: ```map.increment(key)```
+Syntax: ```map.increment(key[, increment_amount])```
 
-Increments the key's value by one. Used for histograms.
+Increments the key's value by `increment_amount`, which defaults to 1. Used for histograms.
 
 Examples in situ:
 [search /examples](https://github.com/iovisor/bcc/search?q=increment+path%3Aexamples&type=Code),
 [search /tools](https://github.com/iovisor/bcc/search?q=increment+path%3Atools&type=Code)
 
-### 16. map.get_stackid()
+### 18. map.get_stackid()
 
 Syntax: ```int map.get_stackid(void *ctx, u64 flags)```
 
@@ -691,7 +826,7 @@ Examples in situ:
 [search /examples](https://github.com/iovisor/bcc/search?q=get_stackid+path%3Aexamples&type=Code),
 [search /tools](https://github.com/iovisor/bcc/search?q=get_stackid+path%3Atools&type=Code)
 
-### 17. map.perf_read()
+### 19. map.perf_read()
 
 Syntax: ```u64 map.perf_read(u32 cpu)```
 
@@ -700,7 +835,7 @@ This returns the hardware performance counter as configured in [5. BPF_PERF_ARRA
 Examples in situ:
 [search /tests](https://github.com/iovisor/bcc/search?q=perf_read+path%3Atests&type=Code)
 
-### 18. map.call()
+### 20. map.call()
 
 Syntax: ```void map.call(void *ctx, int index)```
 
@@ -733,11 +868,71 @@ b.attach_kprobe(event="some_kprobe_event", fn_name="do_tail_call")
 
 This assigns ```tail_call()``` to ```prog_array[2]```. In the end of ```do_tail_call()```, ```prog_array.call(ctx, 2)``` tail-calls ```tail_call()``` and executes it.
 
-**NOTE:** To prevent infinite loop, the maximun number of tail-calls is 32 ([```MAX_TAIL_CALL_CNT```](https://github.com/torvalds/linux/search?l=C&q=MAX_TAIL_CALL_CNT+path%3Ainclude%2Flinux&type=Code)).
+**NOTE:** To prevent infinite loop, the maximum number of tail-calls is 32 ([```MAX_TAIL_CALL_CNT```](https://github.com/torvalds/linux/search?l=C&q=MAX_TAIL_CALL_CNT+path%3Ainclude%2Flinux&type=Code)).
 
 Examples in situ:
 [search /examples](https://github.com/iovisor/bcc/search?l=C&q=call+path%3Aexamples&type=Code),
 [search /tests](https://github.com/iovisor/bcc/search?l=C&q=call+path%3Atests&type=Code)
+
+### 21. map.redirect_map()
+
+Syntax: ```int map.redirect_map(int index, int flags)```
+
+This redirects the incoming packets based on the ```index``` entry. If the map is [10. BPF_DEVMAP](#10-bpf_devmap), the packet will be sent to the transmit queue of the network interface that the entry points to. If the map is [11. BPF_CPUMAP](#11-bpf_cpumap), the packet will be sent to the ring buffer of the ```index``` CPU and be processed by the CPU later.
+
+If the packet is redirected successfully, the function will return XDP_REDIRECT. Otherwise, it will return XDP_ABORTED to discard the packet.
+
+For example:
+```C
+BPF_DEVMAP(devmap, 1);
+
+int redirect_example(struct xdp_md *ctx) {
+    return devmap.redirect_map(0, 0);
+}
+int xdp_dummy(struct xdp_md *ctx) {
+    return XDP_PASS;
+}
+```
+
+```Python
+ip = pyroute2.IPRoute()
+idx = ip.link_lookup(ifname="eth1")[0]
+
+b = bcc.BPF(src_file="example.c")
+
+devmap = b.get_table("devmap")
+devmap[c_uint32(0)] = c_int(idx)
+
+in_fn = b.load_func("redirect_example", BPF.XDP)
+out_fn = b.load_func("xdp_dummy", BPF.XDP)
+b.attach_xdp("eth0", in_fn, 0)
+b.attach_xdp("eth1", out_fn, 0)
+```
+
+Examples in situ:
+[search /examples](https://github.com/iovisor/bcc/search?l=C&q=redirect_map+path%3Aexamples&type=Code),
+
+## Licensing
+
+Depending on which [BPF helpers](kernel-versions.md#helpers) are used, a GPL-compatible license is required.
+
+The special BCC macro `BPF_LICENSE` specifies the license of the BPF program. You can set the license as a comment in your source code, but the kernel has a special interface to specify it programmatically. If you need to use GPL-only helpers, it is recommended to specify the macro in your C code so that the kernel can understand it:
+
+```C
+// SPDX-License-Identifier: GPL-2.0+
+#define BPF_LICENSE GPL
+```
+
+Otherwise, the kernel may reject loading your program (see the [error description](#2-cannot-call-gpl-only-function-from-proprietary-program) below). Note that it supports multiple words and quotes are not necessary:
+
+```C
+// SPDX-License-Identifier: GPL-2.0+ OR BSD-2-Clause
+#define BPF_LICENSE Dual BSD/GPL
+```
+
+Check the [BPF helpers reference](kernel-versions.md#helpers) to see which helpers are GPL-only and what the kernel understands as GPL-compatible.
+
+**If the macro is not specified, BCC will automatically define the license of the program as GPL.**
 
 # bcc Python
 
@@ -747,9 +942,20 @@ Constructors.
 
 ### 1. BPF
 
-Syntax: ```BPF({text=BPF_program | src_file=filename} [, usdt_contexts=[USDT_object, ...]])```
+Syntax: ```BPF({text=BPF_program | src_file=filename} [, usdt_contexts=[USDT_object, ...]] [, cflags=[arg1, ...]] [, debug=int])```
 
 Creates a BPF object. This is the main object for defining a BPF program, and interacting with its output.
+
+Exactly one of `text` or `src_file` must be supplied (not both).
+
+The `cflags` specifies additional arguments to be passed to the compiler, for example `-DMACRO_NAME=value` or `-I/include/path`.  The arguments are passed as an array, with each element being an additional argument.  Note that strings are not split on whitespace, so each argument must be a different element of the array, e.g. `["-include", "header.h"]`.
+
+The `debug` flags control debug output, and can be or'ed together:
+- `DEBUG_LLVM_IR = 0x1` compiled LLVM IR
+- `DEBUG_BPF = 0x2` loaded BPF bytecode and register state on branches
+- `DEBUG_PREPROCESSOR = 0x4` pre-processor result
+- `DEBUG_SOURCE = 0x8` ASM instructions embedded with source
+- `DEBUG_BPF_REGISTER_STATE = 0x10` register state on all instructions in addition to DEBUG_BPF
 
 Examples:
 
@@ -773,6 +979,9 @@ b = BPF(src_file = "vfsreadlat.c")
 u = USDT(pid=int(pid))
 [...]
 b = BPF(text=bpf_text, usdt_contexts=[u])
+
+# add include paths:
+u = BPF(text=prog, cflags=["-I/path/to/include"])
 ```
 
 Examples in situ:
@@ -829,7 +1038,7 @@ Examples in situ:
 
 ### 2. attach_kretprobe()
 
-Syntax: ```BPF.attach_kretprobe(event="event", fn_name="name")```
+Syntax: ```BPF.attach_kretprobe(event="event", fn_name="name" [, maxactive=int])```
 
 Instruments the return of the kernel function ```event()``` using kernel dynamic tracing of the function return, and attaches our C defined function ```name()``` to be called when the kernel function returns.
 
@@ -842,6 +1051,8 @@ b.attach_kretprobe(event="vfs_read", fn_name="do_return")
 This will instrument the kernel ```vfs_read()``` function, which will then run our BPF defined ```do_return()``` function each time it is called.
 
 You can call attach_kretprobe() more than once, and attach your BPF function to multiple kernel function returns.
+
+When a kretprobe is installed on a kernel function, there is a limit on how many parallel calls it can catch. You can change that limit with ```maxactive```. See the kprobes documentation for its default value.
 
 See the previous kretprobes section for how to instrument the return value from BPF.
 
@@ -886,7 +1097,9 @@ b.attach_tracepoint("random:urandom_read", "printarg")
 Notice how the first argument to ```printarg()``` is now our defined struct.
 
 Examples in situ:
-[code](https://github.com/iovisor/bcc/blob/a4159da8c4ea8a05a3c6e402451f530d6e5a8b41/examples/tracing/urandomread-explicit.py#L41)
+[code](https://github.com/iovisor/bcc/blob/a4159da8c4ea8a05a3c6e402451f530d6e5a8b41/examples/tracing/urandomread-explicit.py#L41),
+[search /examples](https://github.com/iovisor/bcc/search?q=attach_tracepoint+path%3Aexamples+language%3Apython&type=Code),
+[search /tools](https://github.com/iovisor/bcc/search?q=attach_tracepoint+path%3Atools+language%3Apython&type=Code)
 
 ### 4. attach_uprobe()
 
@@ -936,8 +1149,8 @@ This will instrument ```strlen()``` function from libc, and call our BPF functio
 Other examples:
 
 ```Python
-b.attach_uprobe(name="c", sym="getaddrinfo", fn_name="do_entry")
-b.attach_uprobe(name="/usr/bin/python", sym="main", fn_name="do_main")
+b.attach_uretprobe(name="c", sym="getaddrinfo", fn_name="do_return")
+b.attach_uretprobe(name="/usr/bin/python", sym="main", fn_name="do_main")
 ```
 
 You can call attach_uretprobe() more than once, and attach your BPF function to multiple user-level functions.
@@ -967,6 +1180,23 @@ To check if your binary has USDT probes, and what they are, you can run ```reade
 Examples in situ:
 [search /examples](https://github.com/iovisor/bcc/search?q=enable_probe+path%3Aexamples+language%3Apython&type=Code),
 [search /tools](https://github.com/iovisor/bcc/search?q=enable_probe+path%3Atools+language%3Apython&type=Code)
+
+### 7. attach_raw_tracepoint()
+
+Syntax: ```BPF.attach_raw_tracepoint(tp="tracepoint", fn_name="name")```
+
+Instruments the kernel raw tracepoint described by ```tracepoint``` (```event``` only, no ```category```), and when hit, runs the BPF function ```name()```.
+
+This is an explicit way to instrument tracepoints. The ```RAW_TRACEPOINT_PROBE``` syntax, covered in the earlier raw tracepoints section, is an alternate method.
+
+For example:
+
+```Python
+b.attach_raw_tracepoint("sched_swtich", "do_trace")
+```
+
+Examples in situ:
+[search /tools](https://github.com/iovisor/bcc/search?q=attach_raw_tracepoint+path%3Atools+language%3Apython&type=Code)
 
 ## Debug Output
 
@@ -1016,21 +1246,23 @@ while 1:
 ```
 
 Examples in situ:
-[search /examples](https://github.com/iovisor/bcc/search?q=trace_print+path%3Aexamples+language%3Apython&type=Code),
-[search /tools](https://github.com/iovisor/bcc/search?q=trace_print+path%3Atools+language%3Apython&type=Code)
+[search /examples](https://github.com/iovisor/bcc/search?q=trace_fields+path%3Aexamples+language%3Apython&type=Code),
+[search /tools](https://github.com/iovisor/bcc/search?q=trace_fields+path%3Atools+language%3Apython&type=Code)
 
 ## Output
 
 Normal output from a BPF program is either:
 
-- per-event: using PERF_EVENT_OUTPUT, open_perf_buffer(), and kprobe_poll().
+- per-event: using PERF_EVENT_OUTPUT, open_perf_buffer(), and perf_buffer_poll().
 - map summary: using items(), or print_log2_hist(), covered in the Maps section.
 
-### 1. kprobe_poll()
+### 1. perf_buffer_poll()
 
-Syntax: ```BPF.kprobe_poll()```
+Syntax: ```BPF.perf_buffer_poll(timeout=T)```
 
-This polls from the ring buffers for all of the open kprobes, calling the callback function that was given in the BPF constructor for each entry, usually via ```open_perf_buffer()```.
+This polls from all open perf ring buffers, calling the callback function that was provided when calling open_perf_buffer for each entry.
+
+The timeout parameter is optional and measured in milliseconds. In its absence, polling continues indefinitely.
 
 Example:
 
@@ -1038,13 +1270,16 @@ Example:
 # loop with callback to print_event
 b["events"].open_perf_buffer(print_event)
 while 1:
-    b.kprobe_poll()
+    try:
+        b.perf_buffer_poll()
+    except KeyboardInterrupt:
+        exit();
 ```
 
 Examples in situ:
-[code](https://github.com/iovisor/bcc/blob/08fbceb7e828f0e3e77688497727c5b2405905fd/examples/tracing/hello_perf_output.py#L61),
-[search /examples](https://github.com/iovisor/bcc/search?q=kprobe_poll+path%3Aexamples+language%3Apython&type=Code),
-[search /tools](https://github.com/iovisor/bcc/search?q=kprobe_poll+path%3Atools+language%3Apython&type=Code)
+[code](https://github.com/iovisor/bcc/blob/v0.9.0/examples/tracing/hello_perf_output.py#L55),
+[search /examples](https://github.com/iovisor/bcc/search?q=perf_buffer_poll+path%3Aexamples+language%3Apython&type=Code),
+[search /tools](https://github.com/iovisor/bcc/search?q=perf_buffer_poll+path%3Atools+language%3Apython&type=Code)
 
 ## Maps
 
@@ -1083,10 +1318,13 @@ def print_event(cpu, data, size):
 # loop with callback to print_event
 b["events"].open_perf_buffer(print_event)
 while 1:
-    b.kprobe_poll()
+    try:
+        b.perf_buffer_poll()
+    except KeyboardInterrupt:
+        exit()
 ```
 
-Note that the data structure transferred will need to be declared in C in the BPF program, and in Python. For example:
+Note that the data structure transferred will need to be declared in C in the BPF program. For example:
 
 ```C
 // define output data structure in C
@@ -1095,7 +1333,19 @@ struct data_t {
     u64 ts;
     char comm[TASK_COMM_LEN];
 };
+BPF_PERF_OUTPUT(events);
+[...]
 ```
+
+In Python, you can either let bcc generate the data structure from C declaration automatically (recommanded):
+
+```Python
+def print_event(cpu, data, size):
+    event = b["events"].event(data)
+[...]
+```
+
+or define it manually:
 
 ```Python
 # define output data structure in Python
@@ -1104,12 +1354,14 @@ class Data(ct.Structure):
     _fields_ = [("pid", ct.c_ulonglong),
                 ("ts", ct.c_ulonglong),
                 ("comm", ct.c_char * TASK_COMM_LEN)]
+
+def print_event(cpu, data, size):
+    event = ct.cast(data, ct.POINTER(Data)).contents
+[...]
 ```
 
-Perhaps in a future bcc version, the Python data structure will be automatically generated from the C declaration.
-
 Examples in situ:
-[code](https://github.com/iovisor/bcc/blob/08fbceb7e828f0e3e77688497727c5b2405905fd/examples/tracing/hello_perf_output.py#L59),
+[code](https://github.com/iovisor/bcc/blob/v0.9.0/examples/tracing/hello_perf_output.py#L52),
 [search /examples](https://github.com/iovisor/bcc/search?q=open_perf_buffer+path%3Aexamples+language%3Apython&type=Code),
 [search /tools](https://github.com/iovisor/bcc/search?q=open_perf_buffer+path%3Atools+language%3Apython&type=Code)
 
@@ -1132,8 +1384,8 @@ for k, v in sorted(counts.items(), key=lambda counts: counts[1].value):
 This example also uses the ```sorted()``` method to sort by value.
 
 Examples in situ:
-[search /examples](https://github.com/iovisor/bcc/search?q=clear+items%3Aexamples+language%3Apython&type=Code),
-[search /tools](https://github.com/iovisor/bcc/search?q=clear+items%3Atools+language%3Apython&type=Code)
+[search /examples](https://github.com/iovisor/bcc/search?q=items+path%3Aexamples+language%3Apython&type=Code),
+[search /tools](https://github.com/iovisor/bcc/search?q=items+path%3Atools+language%3Apython&type=Code)
 
 ### 4. values()
 
@@ -1375,3 +1627,39 @@ Traceback (most recent call last):
     raise Exception("Failed to load BPF program %s" % func_name)
 Exception: Failed to load BPF program kretprobe__inet_csk_accept
 ```
+
+## 2. Cannot call GPL only function from proprietary program
+
+This error happens when a GPL-only helper is called from a non-GPL BPF program. To fix this error, do not use GPL-only helpers from a proprietary BPF program, or relicense the BPF program under a GPL-compatible license. Check which [BPF helpers](https://github.com/iovisor/bcc/blob/master/docs/kernel-versions.md#helpers) are GPL-only, and what licenses are considered GPL-compatible.
+
+Example calling `bpf_get_stackid()`, a GPL-only BPF helper, from a proprietary program (`#define BPF_LICENSE Proprietary`):
+
+```
+bpf: Failed to load program: Invalid argument
+[...]
+8: (85) call bpf_get_stackid#27
+cannot call GPL only function from proprietary program
+```
+
+# Environment Variables
+
+## 1. Kernel source directory
+
+eBPF program compilation needs kernel sources or kernel headers with headers
+compiled. In case your kernel sources are at a non-standard location where BCC
+cannot find then, its possible to provide BCC the absolute path of the location
+by setting `BCC_KERNEL_SOURCE` to it.
+
+## 2. Kernel version overriding
+
+By default, BCC stores the `LINUX_VERSION_CODE` in the generated eBPF object
+which is then passed along to the kernel when the eBPF program is loaded.
+Sometimes this is quite inconvenient especially when the kernel is slightly
+updated such as an LTS kernel release. Its extremely unlikely the slight
+mismatch would cause any issues with the loaded eBPF program. By setting
+`BCC_LINUX_VERSION_CODE` to the version of the kernel that's running, the check
+for verifying the kernel version can be bypassed. This is needed for programs
+that use kprobes. This needs to be encoded in the format: `(VERSION * 65536) +
+(PATCHLEVEL * 256) + SUBLEVEL`. For example, if the running kernel is `4.9.10`,
+then can set `export BCC_LINUX_VERSION_CODE=264458` to override the kernel
+version check successfully.

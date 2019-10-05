@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/python
 #
 # argdist   Trace a function and display a distribution of its
 #           parameter values as a histogram or frequency count.
@@ -559,7 +559,7 @@ argdist -p 1005 -H 'r:c:read()'
 argdist -C 'r::__vfs_read():u32:$PID:$latency > 100000'
         Print frequency of reads by process where the latency was >0.1ms
 
-argdist -H 'r::__vfs_read(void *file, void *buf, size_t count):size_t
+argdist -H 'r::__vfs_read(void *file, void *buf, size_t count):size_t:
             $entry(count):$latency > 1000000'
         Print a histogram of read sizes that were longer than 1ms
 
@@ -610,7 +610,9 @@ argdist -I 'kernel/sched/sched.h' \\
                   type=int,
                   help="maximum string size to read from char* arguments")
                 parser.add_argument("-i", "--interval", default=1, type=int,
-                  help="output interval, in seconds")
+                  help="output interval, in seconds (default 1 second)")
+                parser.add_argument("-d", "--duration", type=int,
+                  help="total duration of trace, in seconds")
                 parser.add_argument("-n", "--number", type=int, dest="count",
                   help="number of outputs")
                 parser.add_argument("-v", "--verbose", action="store_true",
@@ -679,14 +681,16 @@ struct __string_t { char s[%d]; };
                 for probe in self.probes:
                         probe.attach(self.bpf)
                 if self.args.verbose:
-                        print("open uprobes: %s" % self.bpf.open_uprobes)
-                        print("open kprobes: %s" % self.bpf.open_kprobes)
+                        print("open uprobes: %s" % list(self.bpf.uprobe_fds.keys()))
+                        print("open kprobes: %s" % list(self.bpf.kprobe_fds.keys()))
 
         def _main_loop(self):
                 count_so_far = 0
+                seconds = 0
                 while True:
                         try:
                                 sleep(self.args.interval)
+                                seconds += self.args.interval
                         except KeyboardInterrupt:
                                 exit()
                         print("[%s]" % strftime("%H:%M:%S"))
@@ -695,6 +699,9 @@ struct __string_t { char s[%d]; };
                         count_so_far += 1
                         if self.args.count is not None and \
                            count_so_far >= self.args.count:
+                                exit()
+                        if self.args.duration and \
+                           seconds >= self.args.duration:
                                 exit()
 
         def run(self):

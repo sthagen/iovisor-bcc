@@ -154,7 +154,12 @@ void SourceDebugger::dump() {
   }
 
   // bcc has only one compilation unit
+  // getCompileUnitAtIndex() was gone in llvm 8.0 (https://reviews.llvm.org/D49741)
+#if LLVM_MAJOR_VERSION >= 8
+  DWARFCompileUnit *CU = cast<DWARFCompileUnit>(DwarfCtx->getUnitAtIndex(0));
+#else
   DWARFCompileUnit *CU = DwarfCtx->getCompileUnitAtIndex(0);
+#endif
   if (!CU) {
     errs() << "Debug Error: dwarf context failed to get compile unit\n";
     return;
@@ -178,6 +183,9 @@ void SourceDebugger::dump() {
       uint64_t Size;
       uint8_t *FuncStart = get<0>(section.second);
       uint64_t FuncSize = get<1>(section.second);
+#if LLVM_MAJOR_VERSION >= 9
+      unsigned SectionID = get<2>(section.second);
+#endif
       ArrayRef<uint8_t> Data(FuncStart, FuncSize);
       uint32_t CurrentSrcLine = 0;
       string func_name = section.first.substr(fn_prefix_.size());
@@ -196,8 +204,14 @@ void SourceDebugger::dump() {
           break;
         } else {
           DILineInfo LineInfo;
+
           LineTable->getFileLineInfoForAddress(
-              (uint64_t)FuncStart + Index, CU->getCompilationDir(),
+#if LLVM_MAJOR_VERSION >= 9
+              {(uint64_t)FuncStart + Index, SectionID},
+#else
+              (uint64_t)FuncStart + Index,
+#endif
+              CU->getCompilationDir(),
               DILineInfoSpecifier::FileLineInfoKind::AbsoluteFilePath,
               LineInfo);
 

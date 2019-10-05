@@ -84,8 +84,7 @@ int count_only(struct pt_regs *ctx, struct irq_desc *desc)
 
     irq_key_t key = {.slot = 0 /* ignore */};
     bpf_probe_read(&key.name, sizeof(key.name), name);
-    u64 zero = 0, *vp = dist.lookup_or_init(&key, &zero);
-    (*vp)++;
+    dist.increment(key);
 
     return 0;
 }
@@ -136,8 +135,7 @@ else:
     bpf_text = bpf_text.replace('STORE',
         'irq_key_t key = {.slot = 0 /* ignore */};' +
         'bpf_probe_read(&key.name, sizeof(key.name), name);' +
-        'u64 zero = 0, *vp = dist.lookup_or_init(&key, &zero);' +
-        '(*vp) += delta;')
+        'dist.increment(key, delta);')
 if debug or args.ebpf:
     print(bpf_text)
     if args.ebpf:
@@ -174,7 +172,7 @@ while (1):
     else:
         print("%-26s %11s" % ("HARDIRQ", "TOTAL_" + label))
         for k, v in sorted(dist.items(), key=lambda dist: dist[1].value):
-            print("%-26s %11d" % (k.name.decode(), v.value / factor))
+            print("%-26s %11d" % (k.name.decode('utf-8', 'replace'), v.value / factor))
     dist.clear()
 
     countdown -= 1

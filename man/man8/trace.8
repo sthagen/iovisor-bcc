@@ -2,8 +2,8 @@
 .SH NAME
 trace \- Trace a function and print its arguments or return value, optionally evaluating a filter. Uses Linux eBPF/bcc.
 .SH SYNOPSIS
-.B trace [-h] [-b BUFFER_PAGES] [-p PID] [-L TID] [-v] [-Z STRING_SIZE] [-S]
-         [-M MAX_EVENTS] [-t] [-T] [-C] [-K] [-U] [-a] [-I header]
+.B trace [-h] [-b BUFFER_PAGES] [-p PID] [-L TID] [-v] [-Z STRING_SIZE] [-S] [-s SYM_FILE_LIST]
+         [-M MAX_EVENTS] [-t] [-u] [-T] [-C] [-K] [-U] [-a] [-I header]
          probe [probe ...]
 .SH DESCRIPTION
 trace probes functions you specify and displays trace messages if a particular
@@ -28,8 +28,12 @@ Trace only functions in the thread TID.
 Display the generated BPF program, for debugging purposes.
 .TP
 \-z STRING_SIZE
-When collecting string arguments (of type char*), collect up to STRING_SIZE 
+When collecting string arguments (of type char*), collect up to STRING_SIZE
 characters. Longer strings will be truncated.
+.TP
+\-s SYM_FILE_LIST
+When collecting stack trace in build id format, use the coma separated list for
+symbol resolution.
 .TP
 \-S
 If set, trace messages from trace's own process. By default, this is off to
@@ -42,11 +46,17 @@ Print up to MAX_EVENTS trace messages and then exit.
 \-t
 Print times relative to the beginning of the trace (offsets), in seconds.
 .TP
+\-u
+Print UNIX timestamps instead of offsets from trace beginning, requires -t.
+.TP
 \-T
 Print the time column.
 .TP
 \-C
 Print CPU id.
+.TP
+\-B
+Treat argument of STRCMP helper as a binary value
 .TP
 \-K
 Print the kernel stack for each event.
@@ -174,6 +184,10 @@ Trace the pthread_create USDT probe from the pthread library and print the addre
 Trace the nanosleep system call and print the sleep duration in nanoseconds:
 #
 .B trace 'p::SyS_nanosleep(struct timespec *ts) "sleep for %lld ns", ts->tv_nsec'
+.TP
+Trace the inet_pton system call using build id mechanism and print the stack
+#
+.B trace -s /lib/x86_64-linux-gnu/libc.so.6,/bin/ping 'p:c:inet_pton' -U
 .SH SOURCE
 This is from bcc.
 .IP

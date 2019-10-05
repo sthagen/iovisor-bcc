@@ -16,7 +16,7 @@
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
 #
 name: bcc
-version: 0.3.0-20170401-1747-c5f48c9
+version: 0.9.0-20190318-2991-6cf63612
 summary: BPF Compiler Collection (BCC)
 description: A toolkit for creating efficient kernel tracing and manipulation programs
 confinement: strict
@@ -25,335 +25,261 @@ plugs:
     mount-observe: null
     system-observe: null
     system-trace: null
-assumes: [snapd2.23]
-apps:
-    argdist:
-        command: wrapper argdist
-        aliases: [argdist]
-    bashreadline:
-        command: wrapper bashreadline
-        aliases: [bashreadline]
-    biolatency:
-        command: wrapper biolatency
-        aliases: [biolatency]
-    biosnoop:
-        command: wrapper biosnoop
-        aliases: [biosnoop]
-    biotop:
-        command: wrapper biotop
-        aliases: [biotop]
-    bitesize:
-        command: wrapper bitesize
-        aliases: [bitesize]
-    bpflist:
-        command: wrapper bpflist
-        aliases: [bpflist]
-    btrfsdist:
-        command: wrapper btrfsdist
-        aliases: [btrfsdist]
-    btrfsslower:
-        command: wrapper btrfsslower
-        aliases: [btrfsslower]
-    cachestat:
-        command: wrapper cachestat
-        aliases: [cachestat]
-    cachetop:
-        command: wrapper cachetop
-        aliases: [cachetop]
-    capable:
-        command: wrapper capable
-        aliases: [capable]
-    cobjnew:
-        command: wrapper cobjnew
-        aliases: [cobjnew]
-    cpudist:
-        command: wrapper cpudist
-        aliases: [cpudist]
-    cpuunclaimed:
-        command: wrapper cpuunclaimed
-        aliases: [cpuunclaimed]
-    dbslower:
-        command: wrapper dbslower
-        aliases: [dbslower]
-    dbstat:
-        command: wrapper dbstat
-        aliases: [dbstat]
-    dcsnoop:
-        command: wrapper dcsnoop
-        aliases: [dcsnoop]
-    dcstat:
-        command: wrapper dcstat
-        aliases: [dcstat]
-    deadlock-detector:
-        command: wrapper deadlock_detector
-        aliases: [deadlock-detector]
-    execsnoop:
-        command: wrapper execsnoop
-        aliases: [execsnoop]
-    ext4dist:
-        command: wrapper ext4dist
-        aliases: [ext4dist]
-    ext4slower:
-        command: wrapper ext4slower
-        aliases: [ext4slower]
-    filelife:
-        command: wrapper filelife
-        aliases: [filelife]
-    fileslower:
-        command: wrapper fileslower
-        aliases: [fileslower]
-    filetop:
-        command: wrapper filetop
-        aliases: [filetop]
-    funccount:
-        command: wrapper funccount
-        aliases: [funccount]
-    funclatency:
-        command: wrapper funclatency
-        aliases: [funclatency]
-    funcslower:
-        command: wrapper funcslower
-        aliases: [funcslower]
-    gethostlatency:
-        command: wrapper gethostlatency
-        aliases: [gethostlatency]
-    hardirqs:
-        command: wrapper hardirqs
-        aliases: [hardirqs]
-    javacalls:
-        command: wrapper javacalls
-        aliases: [javacalls]
-    javaflow:
-        command: wrapper javaflow
-        aliases: [javaflow]
-    javagc:
-        command: wrapper javagc
-        aliases: [javagc]
-    javaobjnew:
-        command: wrapper javaobjnew
-        aliases: [javaobjnew]
-    javastat:
-        command: wrapper javastat
-        aliases: [javastat]
-    javathreads:
-        command: wrapper javathreads
-        aliases: [javathreads]
-    killsnoop:
-        command: wrapper killsnoop
-        aliases: [killsnoop]
-    llcstat:
-        command: wrapper llcstat
-        aliases: [llcstat]
-    mdflush:
-        command: wrapper mdflush
-        aliases: [mdflush]
-    memleak:
-        command: wrapper memleak
-        aliases: [memleak]
-    mountsnoop:
-        command: wrapper mountsnoop
-        aliases: [mountsnoop]
-    mysqld-qslower:
-        command: wrapper mysqld_qslower
-        aliases: [mysqld-qslower]
-    nfsdist:
-        command: wrapper nfsdist
-        aliases: [nfsdist]
-    nfsslower:
-        command: wrapper nfsslower
-        aliases: [nfsslower]
-    nodegc:
-        command: wrapper nodegc
-        aliases: [nodegc]
-    nodestat:
-        command: wrapper nodestat
-        aliases: [nodestat]
-    offcputime:
-        command: wrapper offcputime
-        aliases: [offcputime]
-    offwaketime:
-        command: wrapper offwaketime
-        aliases: [offwaketime]
-    oomkill:
-        command: wrapper oomkill
-        aliases: [oomkill]
-    opensnoop:
-        command: wrapper opensnoop
-        aliases: [opensnoop]
-    phpcalls:
-        command: wrapper phpcalls
-        aliases: [phpcalls]
-    phpflow:
-        command: wrapper phpflow
-        aliases: [phpflow]
-    phpstat:
-        command: wrapper phpstat
-        aliases: [phpstat]
-    pidpersec:
-        command: wrapper pidpersec
-        aliases: [pidpersec]
-    profile:
-        command: wrapper profile
-        aliases: [profile]
-    pythoncalls:
-        command: wrapper pythoncalls
-        aliases: [pythoncalls]
-    pythonflow:
-        command: wrapper pythonflow
-        aliases: [pythonflow]
-    pythongc:
-        command: wrapper pythongc
-        aliases: [pythongc]
-    pythonstat:
-        command: wrapper pythonstat
-        aliases: [pythonstat]
-    rubycalls:
-        command: wrapper rubycalls
-        aliases: [rubycalls]
-    rubyflow:
-        command: wrapper rubyflow
-        aliases: [rubyflow]
-    rubygc:
-        command: wrapper rubygc
-        aliases: [rubygc]
-    rubyobjnew:
-        command: wrapper rubyobjnew
-        aliases: [rubyobjnew]
-    rubystat:
-        command: wrapper rubystat
-        aliases: [rubystat]
-    runqlat:
-        command: wrapper runqlat
-        aliases: [runqlat]
-    runqlen:
-        command: wrapper runqlen
-        aliases: [runqlen]
-    slabratetop:
-        command: wrapper slabratetop
-        aliases: [slabratetop]
-    softirqs:
-        command: wrapper softirqs
-        aliases: [softirqs]
-    solisten:
-        command: wrapper solisten
-        aliases: [solisten]
-    sslsniff:
-        command: wrapper sslsniff
-        aliases: [sslsniff]
-    stackcount:
-        command: wrapper stackcount
-        aliases: [stackcount]
-    stacksnoop:
-        command: wrapper stacksnoop
-        aliases: [stacksnoop]
-    statsnoop:
-        command: wrapper statsnoop
-        aliases: [statsnoop]
-    syncsnoop:
-        command: wrapper syncsnoop
-        aliases: [syncsnoop]
-    syscount:
-        command: wrapper syscount
-        aliases: [syscount]
-    tcpaccept:
-        command: wrapper tcpaccept
-        aliases: [tcpaccept]
-    tcpconnect:
-        command: wrapper tcpconnect
-        aliases: [tcpconnect]
-    tcpconnlat:
-        command: wrapper tcpconnlat
-        aliases: [tcpconnlat]
-    tcplife:
-        command: wrapper tcplife
-        aliases: [tcplife]
-    tcpretrans:
-        command: wrapper tcpretrans
-        aliases: [tcpretrans]
-    tcptop:
-        command: wrapper tcptop
-        aliases: [tcptop]
-    tcptracer:
-        command: wrapper tcptracer
-        aliases: [tcptracer]
-    tplist:
-        command: wrapper tplist
-        aliases: [tplist]
-    trace:
-        command: wrapper trace
-        aliases: [trace]
-    ttysnoop:
-        command: wrapper ttysnoop
-        aliases: [ttysnoop]
-    ucalls:
-        command: wrapper lib/ucalls
-        aliases: [ucalls]
-    uflow:
-        command: wrapper lib/uflow
-        aliases: [uflow]
-    ugc:
-        command: wrapper lib/ugc
-        aliases: [ugc]
-    uobjnew:
-        command: wrapper lib/uobjnew
-        aliases: [uobjnew]
-    ustat:
-        command: wrapper lib/ustat
-        aliases: [ustat]
-    uthreads:
-        command: wrapper lib/uthreads
-        aliases: [uthreads]
-    vfscount:
-        command: wrapper vfscount
-        aliases: [vfscount]
-    vfsstat:
-        command: wrapper vfsstat
-        aliases: [vfsstat]
-    wakeuptime:
-        command: wrapper wakeuptime
-        aliases: [wakeuptime]
-    xfsdist:
-        command: wrapper xfsdist
-        aliases: [xfsdist]
-    xfsslower:
-        command: wrapper xfsslower
-        aliases: [xfsslower]
-    zfsdist:
-        command: wrapper zfsdist
-        aliases: [zfsdist]
-    zfsslower:
-        command: wrapper zfsslower
-        aliases: [zfsslower]
+assumes: [snapd2.37]
+base: core18
+
 parts:
     bcc:
         plugin: cmake
+        override-pull: |
+            snapcraftctl pull
+            find . -type f -exec sed -i 's|^#\!/usr/bin/python|#\!/usr/bin/env python|' {} \;
         configflags:
-            - -DCMAKE_INSTALL_PREFIX=/usr
+            - '-DCMAKE_INSTALL_PREFIX=/usr'
         source: ..
+        source-type: git
+        stage-packages:
+            - libbz2-1.0
+            - liblzma5
+            - libncursesw5
+            - libtinfo5
+            - libzzip-0-13
         build-packages:
             - bison
             - build-essential
             - cmake
             - flex
             - libedit-dev
-            - libllvm3.7
-            - llvm-3.7-dev
-            - libclang-3.7-dev
+            - libllvm4.0
+            - llvm-4.0-dev
+            - libclang-4.0-dev
             - python
             - zlib1g-dev
             - libelf-dev
-        stage-packages:
-            - python
-        snap:
-            - usr/bin/python*
+            - iperf
+        prime:
             - usr/share/bcc/tools
-            - usr/lib/*/lib*.so*
             - usr/lib/python2.7
+            - usr/lib/*/lib*.so*
             - -usr/share/bcc/tools/doc
+
+    python-deps:
+        plugin: python
+        python-version: python2
+
     wrapper:
+        plugin: dump
+        after: [bcc]
         source: .
-        plugin: copy
-        files:
-            wrapper: bin/wrapper
+        organize:
+            wrapper: bin/bcc-wrapper
+
+apps:
+    argdist:
+        command: bcc-wrapper argdist
+    bashreadline:
+        command: bcc-wrapper bashreadline
+    biolatency:
+        command: bcc-wrapper biolatency
+    biosnoop:
+        command: bcc-wrapper biosnoop
+    biotop:
+        command: bcc-wrapper biotop
+    bitesize:
+        command: bcc-wrapper bitesize
+    bpflist:
+        command: bcc-wrapper bpflist
+    btrfsdist:
+        command: bcc-wrapper btrfsdist
+    btrfsslower:
+        command: bcc-wrapper btrfsslower
+    cachestat:
+        command: bcc-wrapper cachestat
+    cachetop:
+        command: bcc-wrapper cachetop
+    capable:
+        command: bcc-wrapper capable
+    cobjnew:
+        command: bcc-wrapper cobjnew
+    cpudist:
+        command: bcc-wrapper cpudist
+    cpuunclaimed:
+        command: bcc-wrapper cpuunclaimed
+    dbslower:
+        command: bcc-wrapper dbslower
+    dbstat:
+        command: bcc-wrapper dbstat
+    dcsnoop:
+        command: bcc-wrapper dcsnoop
+    dcstat:
+        command: bcc-wrapper dcstat
+    deadlock:
+        command: bcc-wrapper deadlock
+    execsnoop:
+        command: bcc-wrapper execsnoop
+    ext4dist:
+        command: bcc-wrapper ext4dist
+    ext4slower:
+        command: bcc-wrapper ext4slower
+    filelife:
+        command: bcc-wrapper filelife
+    fileslower:
+        command: bcc-wrapper fileslower
+    filetop:
+        command: bcc-wrapper filetop
+    funccount:
+        command: bcc-wrapper funccount
+    funclatency:
+        command: bcc-wrapper funclatency
+    funcslower:
+        command: bcc-wrapper funcslower
+    gethostlatency:
+        command: bcc-wrapper gethostlatency
+    hardirqs:
+        command: bcc-wrapper hardirqs
+    javacalls:
+        command: bcc-wrapper javacalls
+    javaflow:
+        command: bcc-wrapper javaflow
+    javagc:
+        command: bcc-wrapper javagc
+    javaobjnew:
+        command: bcc-wrapper javaobjnew
+    javastat:
+        command: bcc-wrapper javastat
+    javathreads:
+        command: bcc-wrapper javathreads
+    killsnoop:
+        command: bcc-wrapper killsnoop
+    llcstat:
+        command: bcc-wrapper llcstat
+    mdflush:
+        command: bcc-wrapper mdflush
+    memleak:
+        command: bcc-wrapper memleak
+    mountsnoop:
+        command: bcc-wrapper mountsnoop
+    mysqld-qslower:
+        command: bcc-wrapper mysqld_qslower
+    nfsdist:
+        command: bcc-wrapper nfsdist
+    nfsslower:
+        command: bcc-wrapper nfsslower
+    nodegc:
+        command: bcc-wrapper nodegc
+    nodestat:
+        command: bcc-wrapper nodestat
+    offcputime:
+        command: bcc-wrapper offcputime
+    offwaketime:
+        command: bcc-wrapper offwaketime
+    oomkill:
+        command: bcc-wrapper oomkill
+    opensnoop:
+        command: bcc-wrapper opensnoop
+    perlcalls:
+        command: bcc-wrapper perlcalls
+    perlflow:
+        command: bcc-wrapper perlflow
+    perlstat:
+        command: bcc-wrapper perlstat
+    shmsnoop:
+        command: bcc-wrapper shmsnoop
+    sofdsnoop:
+        command: bcc-wrapper sofdsnoop
+    phpcalls:
+        command: bcc-wrapper phpcalls
+    phpflow:
+        command: bcc-wrapper phpflow
+    phpstat:
+        command: bcc-wrapper phpstat
+    pidpersec:
+        command: bcc-wrapper pidpersec
+    profile:
+        command: bcc-wrapper profile
+    pythoncalls:
+        command: bcc-wrapper pythoncalls
+    pythonflow:
+        command: bcc-wrapper pythonflow
+    pythongc:
+        command: bcc-wrapper pythongc
+    pythonstat:
+        command: bcc-wrapper pythonstat
+    rubycalls:
+        command: bcc-wrapper rubycalls
+    rubyflow:
+        command: bcc-wrapper rubyflow
+    rubygc:
+        command: bcc-wrapper rubygc
+    rubyobjnew:
+        command: bcc-wrapper rubyobjnew
+    rubystat:
+        command: bcc-wrapper rubystat
+    runqlat:
+        command: bcc-wrapper runqlat
+    runqlen:
+        command: bcc-wrapper runqlen
+    slabratetop:
+        command: bcc-wrapper slabratetop
+    softirqs:
+        command: bcc-wrapper softirqs
+    solisten:
+        command: bcc-wrapper solisten
+    sslsniff:
+        command: bcc-wrapper sslsniff
+    stackcount:
+        command: bcc-wrapper stackcount
+    statsnoop:
+        command: bcc-wrapper statsnoop
+    syncsnoop:
+        command: bcc-wrapper syncsnoop
+    syscount:
+        command: bcc-wrapper syscount
+    tcpaccept:
+        command: bcc-wrapper tcpaccept
+    tcpconnect:
+        command: bcc-wrapper tcpconnect
+    tcpconnlat:
+        command: bcc-wrapper tcpconnlat
+    tcplife:
+        command: bcc-wrapper tcplife
+    tcpretrans:
+        command: bcc-wrapper tcpretrans
+    tcptop:
+        command: bcc-wrapper tcptop
+    tcptracer:
+        command: bcc-wrapper tcptracer
+    tplist:
+        command: bcc-wrapper tplist
+    trace:
+        command: bcc-wrapper trace
+    ttysnoop:
+        command: bcc-wrapper ttysnoop
+    ucalls:
+        command: bcc-wrapper lib/ucalls
+    uflow:
+        command: bcc-wrapper lib/uflow
+    ugc:
+        command: bcc-wrapper lib/ugc
+    uobjnew:
+        command: bcc-wrapper lib/uobjnew
+    ustat:
+        command: bcc-wrapper lib/ustat
+    uthreads:
+        command: bcc-wrapper lib/uthreads
+    vfscount:
+        command: bcc-wrapper vfscount
+    vfsstat:
+        command: bcc-wrapper vfsstat
+    wakeuptime:
+        command: bcc-wrapper wakeuptime
+    xfsdist:
+        command: bcc-wrapper xfsdist
+    xfsslower:
+        command: bcc-wrapper xfsslower
+    zfsdist:
+        command: bcc-wrapper zfsdist
+    zfsslower:
+        command: bcc-wrapper zfsslower
 
 # vim: set ai et sts=4 tabstop=4 sw=4:

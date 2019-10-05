@@ -63,7 +63,11 @@ bpf_text = """
 #include <uapi/linux/ptrace.h>
 #include <linux/mm.h>
 #include <linux/slab.h>
+#ifdef CONFIG_SLUB
 #include <linux/slub_def.h>
+#else
+#include <linux/slab_def.h>
+#endif
 
 #define CACHE_NAME_SIZE 32
 
@@ -83,12 +87,15 @@ BPF_HASH(counts, struct info_t, struct val_t);
 int kprobe__kmem_cache_alloc(struct pt_regs *ctx, struct kmem_cache *cachep)
 {
     struct info_t info = {};
-    bpf_probe_read(&info.name, sizeof(info.name), (void *)cachep->name);
+    const char *name = cachep->name;
+    bpf_probe_read(&info.name, sizeof(info.name), name);
 
     struct val_t *valp, zero = {};
     valp = counts.lookup_or_init(&info, &zero);
-    valp->count++;
-    valp->size += cachep->size;
+    if (valp) {
+        valp->count++;
+        valp->size += cachep->size;
+    }
 
     return 0;
 }

@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "bcc_exception.h"
+#include "table_storage.h"
 
 namespace llvm {
 class ExecutionEngine;
@@ -32,7 +33,11 @@ class Module;
 class Type;
 }
 
+struct bpf_insn;
+
 namespace ebpf {
+
+typedef std::map<std::string, std::tuple<uint8_t *, uintptr_t, unsigned>> sec_map_def;
 
 // Options to enable different debug logging.
 enum {
@@ -46,6 +51,8 @@ enum {
   DEBUG_SOURCE = 0x8,
   // Debug output register state on all instructions in addition to DEBUG_BPF.
   DEBUG_BPF_REGISTER_STATE = 0x10,
+  // Debug BTF.
+  DEBUG_BTF = 0x20,
 };
 
 class TableDesc;
@@ -53,14 +60,20 @@ class TableStorage;
 class BLoader;
 class ClangLoader;
 class FuncSource;
+class BTF;
+
+bool bpf_module_rw_engine_enabled(void);
 
 class BPFModule {
  private:
   static const std::string FN_PREFIX;
   int init_engine();
+  void initialize_rw_engine();
+  void cleanup_rw_engine();
   int parse(llvm::Module *mod);
   int finalize();
   int annotate();
+  void annotate_light();
   std::unique_ptr<llvm::ExecutionEngine> finalize_rw(std::unique_ptr<llvm::Module> mod);
   std::string make_reader(llvm::Module *mod, llvm::Type *type);
   std::string make_writer(llvm::Module *mod, llvm::Type *type);
@@ -73,14 +86,20 @@ class BPFModule {
   StatusTuple sscanf(std::string fn_name, const char *str, void *val);
   StatusTuple snprintf(std::string fn_name, char *str, size_t sz,
                        const void *val);
+  void load_btf(sec_map_def &sections);
+  int load_maps(sec_map_def &sections);
 
  public:
-  BPFModule(unsigned flags, TableStorage *ts = nullptr, bool rw_engine_enabled = true);
+  BPFModule(unsigned flags, TableStorage *ts = nullptr, bool rw_engine_enabled = true,
+            const std::string &maps_ns = "", bool allow_rlimit = true,
+            const char *dev_name = nullptr);
   ~BPFModule();
+  int free_bcc_memory();
   int load_b(const std::string &filename, const std::string &proto_filename);
   int load_c(const std::string &filename, const char *cflags[], int ncflags);
   int load_string(const std::string &text, const char *cflags[], int ncflags);
   std::string id() const { return id_; }
+  std::string maps_ns() const { return maps_ns_; }
   size_t num_functions() const;
   uint8_t * function_start(size_t id) const;
   uint8_t * function_start(const std::string &name) const;
@@ -117,11 +136,19 @@ class BPFModule {
   char * license() const;
   unsigned kern_version() const;
   TableStorage &table_storage() { return *ts_; }
+  int bcc_func_load(int prog_type, const char *name,
+                    const struct bpf_insn *insns, int prog_len,
+                    const char *license, unsigned kern_version,
+                    int log_level, char *log_buf, unsigned log_buf_size,
+                    const char *dev_name = nullptr);
+  size_t perf_event_fields(const char *) const;
+  const char * perf_event_field(const char *, size_t i) const;
 
  private:
   unsigned flags_;  // 0x1 for printing
   bool rw_engine_enabled_;
   bool used_b_loader_;
+  bool allow_rlimit_;
   std::string filename_;
   std::string proto_filename_;
   std::unique_ptr<llvm::LLVMContext> ctx_;
@@ -129,17 +156,24 @@ class BPFModule {
   std::unique_ptr<llvm::ExecutionEngine> rw_engine_;
   std::unique_ptr<llvm::Module> mod_;
   std::unique_ptr<FuncSource> func_src_;
-  std::map<std::string, std::tuple<uint8_t *, uintptr_t>> sections_;
+  sec_map_def sections_;
   std::vector<TableDesc *> tables_;
   std::map<std::string, size_t> table_names_;
   std::vector<std::string> function_names_;
   std::map<llvm::Type *, std::string> readers_;
   std::map<llvm::Type *, std::string> writers_;
   std::string id_;
+  std::string maps_ns_;
   std::string mod_src_;
   std::map<std::string, std::string> src_dbg_fmap_;
   TableStorage *ts_;
   std::unique_ptr<TableStorage> local_ts_;
+  BTF *btf_;
+  fake_fd_map_def fake_fd_map_;
+  unsigned int ifindex_;
+
+  // map of events -- key: event name, value: event fields
+  std::map<std::string, std::vector<std::string>> perf_events_;
 };
 
 }  // namespace ebpf

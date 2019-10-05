@@ -1,5 +1,11 @@
+if(ENABLE_LLVM_SHARED)
+set(llvm_libs "LLVM")
+else()
 set(llvm_raw_libs bitwriter bpfcodegen debuginfodwarf irreader linker
-  mcjit objcarcopts option passes nativecodegen lto)
+  mcjit objcarcopts option passes lto)
+if(ENABLE_LLVM_NATIVECODEGEN)
+set(llvm_raw_libs ${llvm_raw_libs} nativecodegen)
+endif()
 list(FIND LLVM_AVAILABLE_LIBS "LLVMCoverage" _llvm_coverage)
 if (${_llvm_coverage} GREATER -1)
   list(APPEND llvm_raw_libs coverage)
@@ -14,12 +20,19 @@ if (${LLVM_PACKAGE_VERSION} VERSION_EQUAL 6 OR ${LLVM_PACKAGE_VERSION} VERSION_G
 endif()
 llvm_map_components_to_libnames(_llvm_libs ${llvm_raw_libs})
 llvm_expand_dependencies(llvm_libs ${_llvm_libs})
+endif()
 
 # order is important
 set(clang_libs
   ${libclangFrontend}
   ${libclangSerialization}
-  ${libclangDriver}
+  ${libclangDriver})
+
+if (${LLVM_PACKAGE_VERSION} VERSION_EQUAL 8 OR ${LLVM_PACKAGE_VERSION} VERSION_GREATER 8)
+  list(APPEND clang_libs ${libclangASTMatchers})
+endif()
+
+list(APPEND clang_libs
   ${libclangParse}
   ${libclangSema}
   ${libclangCodeGen}

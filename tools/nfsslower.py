@@ -32,7 +32,6 @@ from __future__ import print_function
 from bcc import BPF
 import argparse
 from time import strftime
-import ctypes as ct
 
 examples = """
     ./nfsslower         # trace operations slower than 10ms
@@ -243,27 +242,9 @@ if debug or args.ebpf:
     if args.ebpf:
         exit()
 
-# kernel->user event data: struct data_t
-DNAME_INLINE_LEN = 32   # linux/dcache.h
-TASK_COMM_LEN = 16      # linux/sched.h
-
-
-class Data(ct.Structure):
-    _fields_ = [
-        ("ts_us", ct.c_ulonglong),
-        ("type", ct.c_ulonglong),
-        ("size", ct.c_ulonglong),
-        ("offset", ct.c_ulonglong),
-        ("delta_us", ct.c_ulonglong),
-        ("pid", ct.c_ulonglong),
-        ("task", ct.c_char * TASK_COMM_LEN),
-        ("file", ct.c_char * DNAME_INLINE_LEN)
-    ]
-
-
 # process event
 def print_event(cpu, data, size):
-    event = ct.cast(data, ct.POINTER(Data)).contents
+    event = b["events"].event(data)
 
     type = 'R'
     if event.type == 1:
@@ -280,13 +261,13 @@ def print_event(cpu, data, size):
         return
     print("%-8s %-14.14s %-6s %1s %-7s %-8d %7.2f %s" %
           (strftime("%H:%M:%S"),
-           event.task.decode(),
+           event.task.decode('utf-8', 'replace'),
            event.pid,
            type,
            event.size,
            event.offset / 1024,
            float(event.delta_us) / 1000,
-           event.file.decode()))
+           event.file.decode('utf-8', 'replace')))
 
 
 # Currently specifically works for NFSv4, the other kprobes are generic
@@ -325,4 +306,7 @@ else:
 
 b["events"].open_perf_buffer(print_event, page_cnt=64)
 while 1:
-        b.kprobe_poll()
+    try:
+        b.perf_buffer_poll()
+    except KeyboardInterrupt:
+        exit()

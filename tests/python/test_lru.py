@@ -27,13 +27,16 @@ class TestLru(unittest.TestCase):
             u32 key=0;
             u32 value = 0, *val;
             val = stats.lookup_or_init(&key, &value);
-            *val += 1;
+            if (val) {
+                *val += 1;
+            }
             return 0;
         }
         """
         b = BPF(text=test_prog1)
         stats_map = b.get_table("stats")
-        b.attach_kprobe(event="sys_clone", fn_name="hello_world")
+        event_name = b.get_syscall_fnname("clone")
+        b.attach_kprobe(event=event_name, fn_name="hello_world")
         ini = stats_map.Leaf()
         for i in range(0, multiprocessing.cpu_count()):
             ini[i] = 0
@@ -51,9 +54,9 @@ class TestLru(unittest.TestCase):
         sum = stats_map.sum(stats_map.Key(0))
         avg = stats_map.average(stats_map.Key(0))
         max = stats_map.max(stats_map.Key(0))
-        self.assertGreater(sum.value, 0L)
-        self.assertGreater(max.value, 0L)
-        b.detach_kprobe("sys_clone")
+        self.assertGreater(sum.value, 0)
+        self.assertGreater(max.value, 0)
+        b.detach_kprobe(event_name)
 
 if __name__ == "__main__":
     unittest.main()

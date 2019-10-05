@@ -19,7 +19,7 @@
 #
 # Simple makefile to mangle version info in the yaml file
 #
-VERSION=$(shell git tag | tail -1 | cut -c2-)
+VERSION=$(shell git tag | sort -V | tail -1 | cut -c2-)
 COMMITS=$(shell git log --oneline | wc -l)
 SHA=$(shell git log -1 --oneline | cut -d' ' -f1)
 DATE=$(shell date +'%Y%m%d')
@@ -29,7 +29,7 @@ all: set_version
 	snapcraft
 
 set_version:
-	cat snapcraft.yaml | sed 's/version: .*/version: $(V)/' > snapcraft-tmp.yaml
+	cat snapcraft.yaml | sed 's/^version: .*/version: $(V)/' > snapcraft-tmp.yaml
 	mv snapcraft-tmp.yaml snapcraft.yaml
 
 install:
