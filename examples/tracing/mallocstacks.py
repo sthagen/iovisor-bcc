@@ -39,14 +39,13 @@ BPF_HASH(calls, int);
 BPF_STACK_TRACE(stack_traces, """ + stacks + """);
 
 int alloc_enter(struct pt_regs *ctx, size_t size) {
-    int key = stack_traces.get_stackid(ctx,
-        BPF_F_USER_STACK|BPF_F_REUSE_STACKID);
+    int key = stack_traces.get_stackid(ctx, BPF_F_USER_STACK);
     if (key < 0)
         return 0;
 
     // could also use `calls.increment(key, size);`
     u64 zero = 0, *val;
-    val = calls.lookup_or_init(&key, &zero);
+    val = calls.lookup_or_try_init(&key, &zero);
     if (val) {
       (*val) += size;
     }
@@ -68,5 +67,6 @@ stack_traces = b.get_table("stack_traces")
 
 for k, v in reversed(sorted(calls.items(), key=lambda c: c[1].value)):
     print("%d bytes allocated at:" % v.value)
-    for addr in stack_traces.walk(k.value):
-        printb(b"\t%s" % b.sym(addr, pid, show_offset=True))
+    if k.value > 0 :
+        for addr in stack_traces.walk(k.value):
+            printb(b"\t%s" % b.sym(addr, pid, show_offset=True))

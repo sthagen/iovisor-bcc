@@ -110,14 +110,14 @@ class Probe(object):
         if self.user_stack:
                 stack_trace += """
                     key.user_stack_id = stack_traces.get_stackid(
-                      %s, BPF_F_REUSE_STACKID | BPF_F_USER_STACK
+                      %s, BPF_F_USER_STACK
                     );""" % (ctx_name)
         else:
                 stack_trace += "key.user_stack_id = -1;"
         if self.kernel_stack:
                 stack_trace += """
                     key.kernel_stack_id = stack_traces.get_stackid(
-                      %s, BPF_F_REUSE_STACKID
+                      %s, 0
                     );""" % (ctx_name)
         else:
                 stack_trace += "key.kernel_stack_id = -1;"
@@ -274,6 +274,12 @@ class Tool(object):
         else:
             self.kernel_stack = self.args.kernel_stacks_only
             self.user_stack = self.args.user_stacks_only
+
+        # For tracing single processes in isolation, explicitly set perpid
+        # to True, if not already set. This is required to generate the correct
+        # BPF program that can store pid in the tgid field of the key_t object.
+        if self.args.pid is not None and self.args.pid > 0:
+            self.args.perpid = True
 
         self.probe = Probe(self.args.pattern,
                            self.kernel_stack, self.user_stack,

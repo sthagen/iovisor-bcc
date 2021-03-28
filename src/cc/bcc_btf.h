@@ -45,6 +45,23 @@ class BTFStringTable {
 };
 
 class BTF {
+  struct bcc_btf_ext_header {
+    uint16_t magic;
+    uint8_t version;
+    uint8_t flags;
+    uint32_t hdr_len;
+
+    /* All offsets are in bytes relative to the end of this header */
+    uint32_t func_info_off;
+    uint32_t func_info_len;
+    uint32_t line_info_off;
+    uint32_t line_info_len;
+
+    /* optional part of .BTF.ext header */
+    uint32_t core_relo_off;
+    uint32_t core_relo_len;
+};
+
  public:
   BTF(bool debug, sec_map_def &sections);
   ~BTF();
@@ -62,7 +79,7 @@ class BTF {
                    unsigned *key_tid, unsigned *value_tid);
 
  private:
-  void fixup_datasec(uint8_t *type_sec, uintptr_t type_sec_size, char *strings);
+  void fixup_btf(uint8_t *type_sec, uintptr_t type_sec_size, char *strings);
   void adjust(uint8_t *btf_sec, uintptr_t btf_sec_size,
               uint8_t *btf_ext_sec, uintptr_t btf_ext_sec_size,
               std::map<std::string, std::string> &remapped_sources,

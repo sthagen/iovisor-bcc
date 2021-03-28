@@ -356,7 +356,9 @@ unique_ptr<ExecutionEngine> BPFModule::finalize_rw(unique_ptr<Module> m) {
   string err;
   EngineBuilder builder(move(m));
   builder.setErrorStr(&err);
+#if LLVM_MAJOR_VERSION <= 11
   builder.setUseOrcMCJITReplacement(false);
+#endif
   auto engine = unique_ptr<ExecutionEngine>(builder.create());
   if (!engine)
     fprintf(stderr, "Could not create ExecutionEngine: %s\n", err.c_str());
@@ -433,7 +435,7 @@ StatusTuple BPFModule::snprintf(string fn_name, char *str, size_t sz,
     return StatusTuple(rc, "error in snprintf: %s", std::strerror(errno));
   if ((size_t)rc == sz)
     return StatusTuple(-1, "buffer of size %zd too small", sz);
-  return StatusTuple(0);
+  return StatusTuple::OK();
 }
 
 } // namespace ebpf

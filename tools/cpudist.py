@@ -64,7 +64,7 @@ typedef struct pid_key {
 } pid_key_t;
 
 
-BPF_HASH(start, u32, u64);
+BPF_HASH(start, u32, u64, MAX_PID);
 STORAGE
 
 static inline void store_start(u32 tgid, u32 pid, u64 ts)
@@ -142,7 +142,7 @@ if args.pids or args.tids:
         pid = "pid"
         section = "tid"
     bpf_text = bpf_text.replace('STORAGE',
-        'BPF_HISTOGRAM(dist, pid_key_t);')
+        'BPF_HISTOGRAM(dist, pid_key_t, MAX_PID);')
     bpf_text = bpf_text.replace('STORE',
         'pid_key_t key = {.id = ' + pid + ', .slot = bpf_log2l(delta)}; ' +
         'dist.increment(key);')
@@ -156,8 +156,11 @@ if debug or args.ebpf:
     if args.ebpf:
         exit()
 
-b = BPF(text=bpf_text)
-b.attach_kprobe(event="finish_task_switch", fn_name="sched_switch")
+max_pid = int(open("/proc/sys/kernel/pid_max").read())
+
+b = BPF(text=bpf_text, cflags=["-DMAX_PID=%d" % max_pid])
+b.attach_kprobe(event_re="^finish_task_switch$|^finish_task_switch\.isra\.\d$",
+                fn_name="sched_switch")
 
 print("Tracing %s-CPU time... Hit Ctrl-C to end." %
       ("off" if args.offcpu else "on"))

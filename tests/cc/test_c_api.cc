@@ -104,7 +104,7 @@ TEST_CASE("resolve symbol name in external library using loaded libraries", "[c_
   struct bcc_symbol sym;
 
   REQUIRE(bcc_resolve_symname("bcc", "bcc_procutils_which", 0x0, getpid(), nullptr, &sym) == 0);
-  REQUIRE(string(sym.module).find("libbcc.so") != string::npos);
+  REQUIRE(string(sym.module).find(LIBBCC_NAME) != string::npos);
   REQUIRE(sym.module[0] == '/');
   REQUIRE(sym.offset != 0);
   bcc_procutils_free(sym.module);
@@ -205,8 +205,8 @@ TEST_CASE("resolve symbol addresses for a given PID", "[c_api]") {
     .use_debug_file = 1,
     .check_debug_file_crc = 1,
     .lazy_symbolize = 1,
-#if defined(__powerpc64__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-    .use_symbol_type = BCC_SYM_ALL_TYPES | (1 << STT_PPC64LE_SYM_LEP),
+#if defined(__powerpc64__) && defined(_CALL_ELF) && _CALL_ELF == 2
+    .use_symbol_type = BCC_SYM_ALL_TYPES | (1 << STT_PPC64_ELFV2_SYM_LEP),
 #else
     .use_symbol_type = BCC_SYM_ALL_TYPES,
 #endif
@@ -233,15 +233,15 @@ TEST_CASE("resolve symbol addresses for a given PID", "[c_api]") {
     REQUIRE(string(lazy_sym.module) == sym.module);
   }
 
-  SECTION("resolve in libbcc.so") {
-    void *libbcc = dlopen("libbcc.so", RTLD_LAZY | RTLD_NOLOAD);
+  SECTION("resolve in " LIBBCC_NAME) {
+    void *libbcc = dlopen(LIBBCC_NAME, RTLD_LAZY | RTLD_NOLOAD);
     REQUIRE(libbcc);
 
     void *libbcc_fptr = dlsym(libbcc, "bcc_resolve_symname");
     REQUIRE(libbcc_fptr);
 
     REQUIRE(bcc_symcache_resolve(resolver, (uint64_t)libbcc_fptr, &sym) == 0);
-    REQUIRE(string(sym.module).find("libbcc.so") != string::npos);
+    REQUIRE(string(sym.module).find(LIBBCC_NAME) != string::npos);
     REQUIRE(string("bcc_resolve_symname") == sym.name);
 
     REQUIRE(bcc_symcache_resolve(lazy_resolver, (uint64_t)libbcc_fptr, &lazy_sym) == 0);
@@ -485,7 +485,7 @@ struct mod_search {
   uint64_t file_offset;
 };
 
-TEST_CASE("searching for modules in /proc/[pid]/maps", "[c_api]") {
+TEST_CASE("searching for modules in /proc/[pid]/maps", "[c_api][!mayfail]") {
   FILE *dummy_maps = fopen("dummy_proc_map.txt", "r");
   REQUIRE(dummy_maps != NULL);
 
@@ -580,7 +580,7 @@ TEST_CASE("searching for modules in /proc/[pid]/maps", "[c_api]") {
   fclose(dummy_maps);
 }
 
-TEST_CASE("resolve global addr in libc in this process", "[c_api]") {
+TEST_CASE("resolve global addr in libc in this process", "[c_api][!mayfail]") {
   int pid = getpid();
   char *sopath = bcc_procutils_which_so("c", pid);
   uint64_t local_addr = 0x15;

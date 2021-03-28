@@ -58,6 +58,8 @@ class BPF {
                    const std::vector<std::string>& cflags = {},
                    const std::vector<USDT>& usdt = {});
 
+  StatusTuple init_usdt(const USDT& usdt);
+
   ~BPF();
   StatusTuple detach_all();
 
@@ -75,17 +77,26 @@ class BPF {
                             const std::string& probe_func,
                             uint64_t symbol_addr = 0,
                             bpf_probe_attach_type attach_type = BPF_PROBE_ENTRY,
-                            pid_t pid = -1);
+                            pid_t pid = -1,
+                            uint64_t symbol_offset = 0,
+                            uint32_t ref_ctr_offset = 0);
   StatusTuple detach_uprobe(const std::string& binary_path,
                             const std::string& symbol, uint64_t symbol_addr = 0,
                             bpf_probe_attach_type attach_type = BPF_PROBE_ENTRY,
-                            pid_t pid = -1);
+                            pid_t pid = -1,
+                            uint64_t symbol_offset = 0);
   StatusTuple attach_usdt(const USDT& usdt, pid_t pid = -1);
+  StatusTuple attach_usdt_all();
   StatusTuple detach_usdt(const USDT& usdt, pid_t pid = -1);
+  StatusTuple detach_usdt_all();
 
   StatusTuple attach_tracepoint(const std::string& tracepoint,
                                 const std::string& probe_func);
   StatusTuple detach_tracepoint(const std::string& tracepoint);
+
+  StatusTuple attach_raw_tracepoint(const std::string& tracepoint,
+                                    const std::string& probe_func);
+  StatusTuple detach_raw_tracepoint(const std::string& tracepoint);
 
   StatusTuple attach_perf_event(uint32_t ev_type, uint32_t ev_config,
                                 const std::string& probe_func,
@@ -142,6 +153,38 @@ class BPF {
     return BPFPercpuHashTable<KeyType, ValueType>({});
   }
 
+  template <class ValueType>
+  BPFSkStorageTable<ValueType> get_sk_storage_table(const std::string& name) {
+    TableStorage::iterator it;
+    if (bpf_module_->table_storage().Find(Path({bpf_module_->id(), name}), it))
+      return BPFSkStorageTable<ValueType>(it->second);
+    return BPFSkStorageTable<ValueType>({});
+  }
+
+  template <class ValueType>
+  BPFCgStorageTable<ValueType> get_cg_storage_table(const std::string& name) {
+    TableStorage::iterator it;
+    if (bpf_module_->table_storage().Find(Path({bpf_module_->id(), name}), it))
+      return BPFCgStorageTable<ValueType>(it->second);
+    return BPFCgStorageTable<ValueType>({});
+  }
+
+  template <class ValueType>
+  BPFPercpuCgStorageTable<ValueType> get_percpu_cg_storage_table(const std::string& name) {
+    TableStorage::iterator it;
+    if (bpf_module_->table_storage().Find(Path({bpf_module_->id(), name}), it))
+      return BPFPercpuCgStorageTable<ValueType>(it->second);
+    return BPFPercpuCgStorageTable<ValueType>({});
+  }
+
+  template <class ValueType>
+  BPFQueueStackTable<ValueType> get_queuestack_table(const std::string& name) {
+    TableStorage::iterator it;
+    if (bpf_module_->table_storage().Find(Path({bpf_module_->id(), name}), it))
+      return BPFQueueStackTable<ValueType>(it->second);
+    return BPFQueueStackTable<ValueType>({});
+  }
+
   void* get_bsymcache(void) {
     if (bsymcache_ == NULL) {
       bsymcache_ = bcc_buildsymcache_new();
@@ -155,6 +198,12 @@ class BPF {
 
   BPFDevmapTable get_devmap_table(const std::string& name);
 
+  BPFXskmapTable get_xskmap_table(const std::string& name);
+
+  BPFSockmapTable get_sockmap_table(const std::string& name);
+
+  BPFSockhashTable get_sockhash_table(const std::string& name);
+
   BPFStackTable get_stack_table(const std::string& name,
                                 bool use_debug_file = true,
                                 bool check_debug_file_crc = true);
@@ -162,6 +211,8 @@ class BPF {
   BPFStackBuildIdTable get_stackbuildid_table(const std::string &name,
                                               bool use_debug_file = true,
                                               bool check_debug_file_crc = true);
+
+  BPFMapInMapTable get_map_in_map_table(const std::string& name);
 
   bool add_module(std::string module);
 
@@ -191,8 +242,14 @@ class BPF {
   int poll_perf_buffer(const std::string& name, int timeout_ms = -1);
 
   StatusTuple load_func(const std::string& func_name, enum bpf_prog_type type,
-                        int& fd);
+                        int& fd, unsigned flags = 0);
   StatusTuple unload_func(const std::string& func_name);
+
+  StatusTuple attach_func(int prog_fd, int attachable_fd,
+                          enum bpf_attach_type attach_type,
+                          uint64_t flags);
+  StatusTuple detach_func(int prog_fd, int attachable_fd,
+                          enum bpf_attach_type attach_type);
 
   int free_bcc_memory();
 
@@ -202,10 +259,15 @@ class BPF {
   std::string get_uprobe_event(const std::string& binary_path, uint64_t offset,
                                bpf_probe_attach_type type, pid_t pid);
 
+  StatusTuple attach_usdt_without_validation(const USDT& usdt, pid_t pid);
+  StatusTuple detach_usdt_without_validation(const USDT& usdt, pid_t pid);
+
   StatusTuple detach_kprobe_event(const std::string& event, open_probe_t& attr);
   StatusTuple detach_uprobe_event(const std::string& event, open_probe_t& attr);
   StatusTuple detach_tracepoint_event(const std::string& tracepoint,
                                       open_probe_t& attr);
+  StatusTuple detach_raw_tracepoint_event(const std::string& tracepoint,
+                                          open_probe_t& attr);
   StatusTuple detach_perf_event_all_cpu(open_probe_t& attr);
 
   std::string attach_type_debug(bpf_probe_attach_type type) {
@@ -239,7 +301,10 @@ class BPF {
   StatusTuple check_binary_symbol(const std::string& binary_path,
                                   const std::string& symbol,
                                   uint64_t symbol_addr, std::string& module_res,
-                                  uint64_t& offset_res);
+                                  uint64_t& offset_res,
+                                  uint64_t symbol_offset = 0);
+
+  void init_fail_reset();
 
   int flag_;
 
@@ -252,10 +317,12 @@ class BPF {
   std::map<std::string, int> funcs_;
 
   std::vector<USDT> usdt_;
+  std::string all_bpf_program_;
 
   std::map<std::string, open_probe_t> kprobes_;
   std::map<std::string, open_probe_t> uprobes_;
   std::map<std::string, open_probe_t> tracepoints_;
+  std::map<std::string, open_probe_t> raw_tracepoints_;
   std::map<std::string, BPFPerfBuffer*> perf_buffers_;
   std::map<std::string, BPFPerfEventArray*> perf_event_arrays_;
   std::map<std::pair<uint32_t, uint32_t>, open_probe_t> perf_events_;
@@ -272,6 +339,12 @@ class USDT {
   USDT(const USDT& usdt);
   USDT(USDT&& usdt) noexcept;
 
+  const std::string &binary_path() const { return binary_path_; }
+  pid_t pid() const { return pid_; }
+  const std::string &provider() const { return provider_; }
+  const std::string &name() const { return name_; }
+  const std::string &probe_func() const { return probe_func_; }
+
   StatusTuple init();
 
   bool operator==(const USDT& other) const;
@@ -287,16 +360,20 @@ class USDT {
                << usdt.probe_func_;
   }
 
-  // When the kludge flag is set to 1, we will only match on inode
+  // When the kludge flag is set to 1 (default), we will only match on inode
   // when searching for modules in /proc/PID/maps that might contain the
-  // tracepoint we're looking for. Normally match is on inode and
+  // tracepoint we're looking for.
+  // By setting this to 0, we will match on both inode and
   // (dev_major, dev_minor), which is a more accurate way to uniquely
-  // identify a file.
+  // identify a file, but may fail depending on the filesystem backing the
+  // target file (see bcc#2715)
   //
-  // This hack exists because btrfs reports different device numbers for files
-  // in /proc/PID/maps vs stat syscall. Don't use it unless you're using btrfs
+  // This hack exists because btrfs and overlayfs report different device
+  // numbers for files in /proc/PID/maps vs stat syscall. Don't use it unless
+  // you've had issues with inode collisions. Both btrfs and overlayfs are
+  // known to require inode-only resolution to accurately match a file.
   //
-  // set_probe_matching_kludge(1) must be called before USDTs are submitted to
+  // set_probe_matching_kludge(0) must be called before USDTs are submitted to
   // BPF::init()
   int set_probe_matching_kludge(uint8_t kludge);
 

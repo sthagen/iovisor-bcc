@@ -94,7 +94,7 @@ TEST_CASE("test bpf table", "[bpf_table]") {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 6, 0)
 TEST_CASE("test bpf percpu tables", "[bpf_percpu_table]") {
   const std::string BPF_PROGRAM = R"(
-    BPF_TABLE("percpu_hash", int, u64, myhash, 128);
+    BPF_PERCPU_HASH(myhash, int, u64, 128);
   )";
 
   ebpf::BPF bpf;
@@ -181,7 +181,7 @@ TEST_CASE("test bpf stack table", "[bpf_stack_table]") {
     int on_sys_getuid(void *ctx) {
       int stack_id = stack_traces.get_stackid(ctx, BPF_F_REUSE_STACKID);
       int zero = 0, *val;
-      val = id.lookup_or_init(&zero, &stack_id);
+      val = id.lookup_or_try_init(&zero, &stack_id);
       if (val) {
         (*val) = stack_id;
       }
@@ -234,7 +234,7 @@ TEST_CASE("test bpf stack_id table", "[bpf_stack_table]") {
     int on_sys_getuid(void *ctx) {
       int stack_id = stack_traces.get_stackid(ctx, BPF_F_USER_STACK);
       int zero = 0, *val;
-      val = id.lookup_or_init(&zero, &stack_id);
+      val = id.lookup_or_try_init(&zero, &stack_id);
       if (val) {
         (*val) = stack_id;
       }
