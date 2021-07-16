@@ -63,19 +63,23 @@ This guide is incomplete. If something feels missing, check the bcc and kernel s
         - [15. BPF_HASH_OF_MAPS](#15-bpf_hash_of_maps)
         - [16. BPF_STACK](#16-bpf_stack)
         - [17. BPF_QUEUE](#17-bpf_queue)
-        - [18. map.lookup()](#18-maplookup)
-        - [19. map.lookup_or_try_init()](#19-maplookup_or_try_init)
-        - [20. map.delete()](#20-mapdelete)
-        - [21. map.update()](#21-mapupdate)
-        - [22. map.insert()](#22-mapinsert)
-        - [23. map.increment()](#23-mapincrement)
-        - [24. map.get_stackid()](#24-mapget_stackid)
-        - [25. map.perf_read()](#25-mapperf_read)
-        - [26. map.call()](#26-mapcall)
-        - [27. map.redirect_map()](#27-mapredirect_map)
-        - [28. map.push()](#28-mappush)
-        - [29. map.pop()](#29-mappop)
-        - [30. map.peek()](#30-mappeek)
+        - [18. BPF_SOCKHASH](#18-bpf_sockhash)
+        - [19. map.lookup()](#19-maplookup)
+        - [20. map.lookup_or_try_init()](#20-maplookup_or_try_init)
+        - [21. map.delete()](#21-mapdelete)
+        - [22. map.update()](#22-mapupdate)
+        - [23. map.insert()](#23-mapinsert)
+        - [24. map.increment()](#24-mapincrement)
+        - [25. map.get_stackid()](#25-mapget_stackid)
+        - [26. map.perf_read()](#26-mapperf_read)
+        - [27. map.call()](#27-mapcall)
+        - [28. map.redirect_map()](#28-mapredirect_map)
+        - [29. map.push()](#29-mappush)
+        - [30. map.pop()](#30-mappop)
+        - [31. map.peek()](#31-mappeek)
+        - [32. map.sock_hash_update()](#32-mapsock_hash_update)
+        - [33. map.msg_redirect_hash()](#33-mapmsg_redirect_hash)
+        - [34. map.sk_redirect_hash()](#34-mapsk_redirect_hash)
     - [Licensing](#licensing)
     - [Rewriter](#rewriter)
 
@@ -91,6 +95,10 @@ This guide is incomplete. If something feels missing, check the bcc and kernel s
         - [5. attach_uretprobe()](#5-attach_uretprobe)
         - [6. USDT.enable_probe()](#6-usdtenable_probe)
         - [7. attach_raw_tracepoint()](#7-attach_raw_tracepoint)
+        - [8. attach_raw_socket()](#8-attach_raw_socket)
+        - [9. attach_xdp()](#9-attach_xdp)
+        - [10. attach_func()](#10-attach_func)
+        - [11. detach_func()](#11-detach_func)
     - [Debug Output](#debug-output)
         - [1. trace_print()](#1-trace_print)
         - [2. trace_fields()](#2-trace_fields)
@@ -105,12 +113,15 @@ This guide is incomplete. If something feels missing, check the bcc and kernel s
         - [4. values()](#4-values)
         - [5. clear()](#5-clear)
         - [6. items_lookup_and_delete_batch()](#6-items_lookup_and_delete_batch)
-        - [7. print_log2_hist()](#7-print_log2_hist)
-        - [8. print_linear_hist()](#8-print_linear_hist)
-        - [9. open_ring_buffer()](#9-open_ring_buffer)
-        - [10. push()](#10-push)
-        - [11. pop()](#11-pop)
-        - [12. peek()](#12-peek)
+        - [7. items_lookup_batch()](#7-items_lookup_batch)
+        - [8. items_delete_batch()](#8-items_delete_batch)
+        - [9. items_update_batch()](#9-items_update_batch)
+        - [10. print_log2_hist()](#10-print_log2_hist)
+        - [11. print_linear_hist()](#11-print_linear_hist)
+        - [12. open_ring_buffer()](#12-open_ring_buffer)
+        - [13. push()](#13-push)
+        - [14. pop()](#14-pop)
+        - [15. peek()](#15-peek)
     - [Helpers](#helpers)
         - [1. ksym()](#1-ksym)
         - [2. ksymname()](#2-ksymname)
@@ -143,7 +154,7 @@ Arguments are specified on the function declaration: kprobe__*kernel_function_na
 For example:
 
 ```C
-int kprobe__tcp_v4_connect(struct pt_regs *ctx, struct sock *sk)
+int kprobe__tcp_v4_connect(struct pt_regs *ctx, struct sock *sk) {
     [...]
 }
 ```
@@ -868,8 +879,9 @@ Examples in situ:
 
 #### Pinned Maps
 
-Maps that were pinned to the BPF filesystem can be accessed through an extended syntax: ```BPF_TABLE_PINNED(_table_type, _key_type, _leaf_type, _name, _max_entries, "/sys/fs/bpf/xyz")```
-The type information is not enforced and the actual map type depends on the map that got pinned to the location.
+Syntax: ```BPF_TABLE_PINNED(_table_type, _key_type, _leaf_type, _name, _max_entries, "/sys/fs/bpf/xyz")```
+
+Create a new map if it doesn't exist and pin it to the bpffs as a FILE, otherwise use the map that was pinned to the bpffs. The type information is not enforced and the actual map type depends on the map that got pinned to the location.
 
 For example:
 
@@ -1153,7 +1165,7 @@ BPF_ARRAY_OF_MAPS(maps_array, "ex1", 10);
 
 ### 15. BPF_HASH_OF_MAPS
 
-Syntax: ```BPF_HASH_OF_MAPS(name, inner_map_name, size)```
+Syntax: ```BPF_HASH_OF_MAPS(name, key_type, inner_map_name, size)```
 
 This creates a hash map with a map-in-map type (BPF_MAP_TYPE_HASH_OF_MAPS) map named ```name``` with ```size``` entries. The inner map meta data is provided by map ```inner_map_name``` and can be most of array or hash maps except ```BPF_MAP_TYPE_PROG_ARRAY```, ```BPF_MAP_TYPE_CGROUP_STORAGE``` and ```BPF_MAP_TYPE_PERCPU_CGROUP_STORAGE```.
 
@@ -1161,7 +1173,7 @@ For example:
 ```C
 BPF_ARRAY(ex1, int, 1024);
 BPF_ARRAY(ex2, int, 1024);
-BPF_HASH_OF_MAPS(maps_hash, "ex1", 10);
+BPF_HASH_OF_MAPS(maps_hash, struct custom_key, "ex1", 10);
 ```
 
 ### 16. BPF_STACK
@@ -1204,7 +1216,37 @@ Methods (covered later): map.push(), map.pop(), map.peek().
 Examples in situ:
 [search /tests](https://github.com/iovisor/bcc/search?q=BPF_QUEUE+path%3Atests&type=Code),
 
-### 18. map.lookup()
+### 18. BPF_SOCKHASH
+
+Syntax: ```BPF_SOCKHASH(name[, key_type [, max_entries)```
+
+Creates a hash named ```name```, with optional parameters. sockhash is only available from Linux 4.18+.
+
+Default: ```BPF_SOCKHASH(name, key_type=u32, max_entries=10240)```
+
+For example:
+
+```C
+struct sock_key {
+  u32 remote_ip4;
+  u32 local_ip4;
+  u32 remote_port;
+  u32 local_port;
+};
+BPF_HASH(skh, struct sock_key, 65535);
+```
+
+This creates a hash named ```skh``` where the key is a ```struct sock_key```.
+
+A sockhash is a BPF map type that holds references to sock structs. Then with a new sk/msg redirect bpf helper BPF programs can use the map to redirect skbs/msgs between sockets (```map.sk_redirect_hash()/map.msg_redirect_hash()```).
+
+The difference between ```BPF_SOCKHASH``` and ```BPF_SOCKMAP``` is that ```BPF_SOCKMAP``` is implemented based on an array, and enforces keys to be four bytes. While ```BPF_SOCKHASH``` is implemented based on hash table, and the type of key can be specified freely.
+
+Methods (covered later): map.sock_hash_update(), map.msg_redirect_hash(), map.sk_redirect_hash().
+
+[search /tests](https://github.com/iovisor/bcc/search?q=BPF_SOCKHASH+path%3Atests&type=Code)
+
+### 19. map.lookup()
 
 Syntax: ```*val map.lookup(&key)```
 
@@ -1214,7 +1256,7 @@ Examples in situ:
 [search /examples](https://github.com/iovisor/bcc/search?q=lookup+path%3Aexamples&type=Code),
 [search /tools](https://github.com/iovisor/bcc/search?q=lookup+path%3Atools&type=Code)
 
-### 19. map.lookup_or_try_init()
+### 20. map.lookup_or_try_init()
 
 Syntax: ```*val map.lookup_or_try_init(&key, &zero)```
 
@@ -1227,7 +1269,7 @@ Examples in situ:
 Note: The old map.lookup_or_init() may cause return from the function, so lookup_or_try_init() is recommended as it
 does not have this side effect.
 
-### 20. map.delete()
+### 21. map.delete()
 
 Syntax: ```map.delete(&key)```
 
@@ -1237,7 +1279,7 @@ Examples in situ:
 [search /examples](https://github.com/iovisor/bcc/search?q=delete+path%3Aexamples&type=Code),
 [search /tools](https://github.com/iovisor/bcc/search?q=delete+path%3Atools&type=Code)
 
-### 21. map.update()
+### 22. map.update()
 
 Syntax: ```map.update(&key, &val)```
 
@@ -1247,7 +1289,7 @@ Examples in situ:
 [search /examples](https://github.com/iovisor/bcc/search?q=update+path%3Aexamples&type=Code),
 [search /tools](https://github.com/iovisor/bcc/search?q=update+path%3Atools&type=Code)
 
-### 22. map.insert()
+### 23. map.insert()
 
 Syntax: ```map.insert(&key, &val)```
 
@@ -1257,17 +1299,21 @@ Examples in situ:
 [search /examples](https://github.com/iovisor/bcc/search?q=insert+path%3Aexamples&type=Code),
 [search /tools](https://github.com/iovisor/bcc/search?q=insert+path%3Atools&type=Code)
 
-### 23. map.increment()
+### 24. map.increment()
 
 Syntax: ```map.increment(key[, increment_amount])```
 
 Increments the key's value by `increment_amount`, which defaults to 1. Used for histograms.
 
+```map.increment()``` are not atomic. In the concurrency case. If you want more accurate results, use ```map.atomic_increment()``` instead of ```map.increment()```. The overhead of ```map.increment()``` and ```map.atomic_increment()``` is similar.
+
+Note. When using ```map.atomic_increment()``` to operate on a BPF map of type ```BPF_MAP_TYPE_HASH```, ```map.atomic_increment()``` does not guarantee the atomicity of the operation when the specified key does not exist.
+
 Examples in situ:
 [search /examples](https://github.com/iovisor/bcc/search?q=increment+path%3Aexamples&type=Code),
 [search /tools](https://github.com/iovisor/bcc/search?q=increment+path%3Atools&type=Code)
 
-### 24. map.get_stackid()
+### 25. map.get_stackid()
 
 Syntax: ```int map.get_stackid(void *ctx, u64 flags)```
 
@@ -1277,7 +1323,7 @@ Examples in situ:
 [search /examples](https://github.com/iovisor/bcc/search?q=get_stackid+path%3Aexamples&type=Code),
 [search /tools](https://github.com/iovisor/bcc/search?q=get_stackid+path%3Atools&type=Code)
 
-### 25. map.perf_read()
+### 26. map.perf_read()
 
 Syntax: ```u64 map.perf_read(u32 cpu)```
 
@@ -1286,7 +1332,7 @@ This returns the hardware performance counter as configured in [5. BPF_PERF_ARRA
 Examples in situ:
 [search /tests](https://github.com/iovisor/bcc/search?q=perf_read+path%3Atests&type=Code)
 
-### 26. map.call()
+### 27. map.call()
 
 Syntax: ```void map.call(void *ctx, int index)```
 
@@ -1325,7 +1371,7 @@ Examples in situ:
 [search /examples](https://github.com/iovisor/bcc/search?l=C&q=call+path%3Aexamples&type=Code),
 [search /tests](https://github.com/iovisor/bcc/search?l=C&q=call+path%3Atests&type=Code)
 
-### 27. map.redirect_map()
+### 28. map.redirect_map()
 
 Syntax: ```int map.redirect_map(int index, int flags)```
 
@@ -1363,7 +1409,7 @@ b.attach_xdp("eth1", out_fn, 0)
 Examples in situ:
 [search /examples](https://github.com/iovisor/bcc/search?l=C&q=redirect_map+path%3Aexamples&type=Code),
 
-### 28. map.push()
+### 29. map.push()
 
 Syntax: ```int map.push(&val, int flags)```
 
@@ -1374,7 +1420,7 @@ Returns 0 on success, negative error on failure.
 Examples in situ:
 [search /tests](https://github.com/iovisor/bcc/search?q=push+path%3Atests&type=Code),
 
-### 29. map.pop()
+### 30. map.pop()
 
 Syntax: ```int map.pop(&val)```
 
@@ -1385,7 +1431,7 @@ Returns 0 on success, negative error on failure.
 Examples in situ:
 [search /tests](https://github.com/iovisor/bcc/search?q=pop+path%3Atests&type=Code),
 
-### 30. map.peek()
+### 31. map.peek()
 
 Syntax: ```int map.peek(&val)```
 
@@ -1395,6 +1441,47 @@ Returns 0 on success, negative error on failure.
 
 Examples in situ:
 [search /tests](https://github.com/iovisor/bcc/search?q=peek+path%3Atests&type=Code),
+
+### 32. map.sock_hash_update()
+
+Syntax: ```int map.sock_hash_update(struct bpf_sock_ops *skops, &key, int flags)```
+
+Add an entry to, or update a sockhash map referencing sockets. The skops is used as a new value for the entry associated to key. flags is one of:
+
+```
+BPF_NOEXIST: The entry for key must not exist in the map.
+BPF_EXIST: The entry for key must already exist in the map.
+BPF_ANY: No condition on the existence of the entry for key.
+```
+
+If the map has eBPF programs (parser and verdict), those will be inherited by the socket being added. If the socket is already attached to eBPF programs, this results in an error.
+
+Return 0 on success, or a negative error in case of failure.
+
+Examples in situ:
+[search /tests](https://github.com/iovisor/bcc/search?q=sock_hash_update+path%3Atests&type=Code),
+
+### 33. map.msg_redirect_hash()
+
+Syntax: ```int map.msg_redirect_hash(struct sk_msg_buff *msg, void *key, u64 flags)```
+
+This helper is used in programs implementing policies at the socket level. If the message msg is allowed to pass (i.e. if the verdict eBPF program returns SK_PASS), redirect it to the socket referenced by map (of type BPF_MAP_TYPE_SOCKHASH) using hash key. Both ingress and egress interfaces can be used for redirection. The BPF_F_INGRESS value in flags is used to make the distinction (ingress path is selected if the flag is present, egress path otherwise). This is the only flag supported for now.
+
+Return SK_PASS on success, or SK_DROP on error.
+
+Examples in situ:
+[search /tests](https://github.com/iovisor/bcc/search?q=msg_redirect_hash+path%3Atests&type=Code),
+
+### 34. map.sk_redirect_hash()
+
+Syntax: ```int map.sk_redirect_hash(struct sk_buff *skb, void *key, u64 flags)```
+
+This helper is used in programs implementing policies at the skb socket level. If the sk_buff skb is allowed to pass (i.e. if the verdict eBPF program returns SK_PASS), redirect it to the socket referenced by map (of  type  BPF_MAP_TYPE_SOCKHASH) using hash key. Both ingress and egress interfaces can be used for redirection. The BPF_F_INGRESS value in flags is used to make the distinction (ingress path is selected if the flag is present, egress otherwise). This is the only flag supported for now.
+
+Return SK_PASS on success, or SK_DROP on error.
+
+Examples in situ:
+[search /tests](https://github.com/iovisor/bcc/search?q=sk_redirect_hash+path%3Atests&type=Code),
 
 ## Licensing
 
@@ -1444,6 +1531,7 @@ The `debug` flags control debug output, and can be or'ed together:
 - `DEBUG_PREPROCESSOR = 0x4` pre-processor result
 - `DEBUG_SOURCE = 0x8` ASM instructions embedded with source
 - `DEBUG_BPF_REGISTER_STATE = 0x10` register state on all instructions in addition to DEBUG_BPF
+- `DEBUG_BTF = 0x20` print the messages from the `libbpf` library.
 
 Examples:
 
@@ -1685,11 +1773,121 @@ This is an explicit way to instrument tracepoints. The ```RAW_TRACEPOINT_PROBE``
 For example:
 
 ```Python
-b.attach_raw_tracepoint("sched_swtich", "do_trace")
+b.attach_raw_tracepoint("sched_switch", "do_trace")
 ```
 
 Examples in situ:
 [search /tools](https://github.com/iovisor/bcc/search?q=attach_raw_tracepoint+path%3Atools+language%3Apython&type=Code)
+
+### 8. attach_raw_socket()
+
+Syntax: ```BPF.attach_raw_socket(fn, dev)```
+
+Attaches a BPF function to the specified network interface.
+
+The ```fn``` must be the type of ```BPF.function``` and the bpf_prog type needs to be ```BPF_PROG_TYPE_SOCKET_FILTER```  (```fn=BPF.load_func(func_name, BPF.SOCKET_FILTER)```)
+
+```fn.sock``` is a non-blocking raw socket that was created and bound to ```dev```.
+
+All network packets processed by ```dev``` are copied to the ```recv-q``` of ```fn.sock``` after being processed by bpf_prog. Try to recv packet form ```fn.sock``` with rev/recvfrom/recvmsg. Note that if the ```recv-q``` is not read in time after the ```recv-q``` is full, the copied packets will be discarded.
+
+We can use this feature to capture network packets just like ```tcpdump```.
+
+We can use ```ss --bpf --packet -p``` to observe ```fn.sock```.
+
+Example:
+
+```Python
+BPF.attach_raw_socket(bpf_func, ifname)
+```
+
+Examples in situ:
+[search /examples](https://github.com/iovisor/bcc/search?q=attach_raw_socket+path%3Aexamples+language%3Apython&type=Code)
+### 9. attach_xdp()
+Syntax: ```BPF.attach_xdp(dev="device", fn=b.load_func("fn_name",BPF_XDP), flags)```
+
+Instruments the network driver described by ```dev``` , and then receives the packet, run the BPF function ```fn_name()``` with flags.
+
+Here is a list of optional flags.
+
+```Python
+# from xdp_flags uapi/linux/if_link.h
+XDP_FLAGS_UPDATE_IF_NOEXIST = (1 << 0)
+XDP_FLAGS_SKB_MODE = (1 << 1)
+XDP_FLAGS_DRV_MODE = (1 << 2)
+XDP_FLAGS_HW_MODE = (1 << 3)
+XDP_FLAGS_REPLACE = (1 << 4)
+```
+
+You can use flags like this ```BPF.attach_xdp(dev="device", fn=b.load_func("fn_name",BPF_XDP), flags=BPF.XDP_FLAGS_UPDATE_IF_NOEXIST)```
+
+The default value of flgas is 0. This means if there is no xdp program with `device`, the fn will run with that device. If there is an xdp program running with device, the old program will be replaced with new fn program.
+
+Currently, bcc does not support XDP_FLAGS_REPLACE flag. The following are the descriptions of other flags.
+
+#### 1. XDP_FLAGS_UPDATE_IF_NOEXIST
+If an XDP program is already attached to the specified driver, attaching the XDP program again will fail.
+
+#### 2. XDP_FLAGS_SKB_MODE
+Driver doesn’t have support for XDP, but the kernel fakes it.
+XDP program works, but there’s no real performance benefit because packets are handed to kernel stack anyways which then emulates XDP – this is usually supported with generic network drivers used in home computers, laptops, and virtualized HW.
+
+#### 3. XDP_FLAGS_DRV_MODE
+A driver has XDP support and can hand then to XDP without kernel stack interaction – Few drivers can support it and those are usually for enterprise HW.
+
+#### 4. XDP_FLAGS_HW_MODE
+XDP can be loaded and executed directly on the NIC – just a handful of NICs can do that.
+
+
+For example:
+
+```Python
+b.attach_xdp(dev="ens1", fn=b.load_func("do_xdp", BPF.XDP))
+```
+
+This will instrument the network device ```ens1``` , which will then run our BPF defined ```do_xdp()``` function each time it receives packets.
+
+Don't forget to call ```b.remove_xdp("ens1")``` at the end!
+
+Examples in situ:
+[search /examples](https://github.com/iovisor/bcc/search?q=attach_xdp+path%3Aexamples+language%3Apython&type=Code),
+[search /tools](https://github.com/iovisor/bcc/search?q=attach_xdp+path%3Atools+language%3Apython&type=Code)
+
+### 10. attach_func()
+
+Syntax: ```BPF.attach_func(fn, attachable_fd, attach_type [, flags])```
+
+Attaches a BPF function of the specified type to a particular ```attachable_fd```. if the ```attach_type``` is ```BPF_FLOW_DISSECTOR```, the function is expected to attach to current net namespace and ```attachable_fd``` must be 0.
+
+For example:
+
+```Python
+b.attach_func(fn, cgroup_fd, BPFAttachType.CGROUP_SOCK_OPS)
+b.attach_func(fn, map_fd, BPFAttachType.SK_MSG_VERDICT)
+```
+
+Note. When attached to "global" hooks (xdp, tc, lwt, cgroup). If the "BPF function" is no longer needed after the program terminates, be sure to call `detach_func` when the program exits.
+
+Examples in situ:
+
+[search /examples](https://github.com/iovisor/bcc/search?q=attach_func+path%3Aexamples+language%3Apython&type=Code),
+
+### 11. detach_func()
+
+Syntax: ```BPF.detach_func(fn, attachable_fd, attach_type)```
+
+Detaches a BPF function of the specified type.
+
+For example:
+
+```Python
+b.detach_func(fn, cgroup_fd, BPFAttachType.CGROUP_SOCK_OPS)
+b.detach_func(fn, map_fd, BPFAttachType.SK_MSG_VERDICT)
+```
+
+Examples in situ:
+
+[search /examples](https://github.com/iovisor/bcc/search?q=detach_func+path%3Aexamples+language%3Apython&type=Code),
 
 ## Debug Output
 
@@ -1961,7 +2159,7 @@ Examples in situ:
 Syntax: ```table.items_lookup_and_delete_batch()```
 
 Returns an array of the keys in a table with a single call to BPF syscall. This can be used with BPF_HASH maps to fetch, and iterate, over the keys. It also clears the table: deletes all entries.
-You should rather use table.items_lookup_and_delete_batch() than table.items() followed by table.clear().
+You should rather use table.items_lookup_and_delete_batch() than table.items() followed by table.clear(). It requires kernel v5.6.
 
 Example:
 
@@ -1974,7 +2172,48 @@ while True:
     sleep(1)
 ```
 
-### 7. print_log2_hist()
+### 7. items_lookup_batch()
+
+Syntax: ```table.items_lookup_batch()```
+
+Returns an array of the keys in a table with a single call to BPF syscall. This can be used with BPF_HASH maps to fetch, and iterate, over the keys.
+You should rather use table.items_lookup_batch() than table.items(). It requires kernel v5.6.
+
+Example:
+
+```Python
+# print current value of map:
+print("%9s-%9s-%8s-%9s" % ("PID", "COMM", "fname", "counter"))
+while True:
+    for k, v in sorted(b['map'].items_lookup_batch(), key=lambda kv: (kv[0]).pid):
+        print("%9s-%9s-%8s-%9d" % (k.pid, k.comm, k.fname, v.counter))
+```
+
+### 8. items_delete_batch()
+
+Syntax: ```table.items_delete_batch(keys)```
+
+It clears all entries of a BPF_HASH map when keys is None. It is more efficient than table.clear() since it generates only one system call. You can delete a subset of a map by giving an array of keys as parameter. Those keys and their associated values will be deleted. It requires kernel v5.6.
+
+Arguments:
+
+- keys is optional and by default is None.
+
+
+
+### 9. items_update_batch()
+
+Syntax: ```table.items_update_batch(keys, values)```
+
+Update all the provided keys with new values. The two arguments must be the same length and within the map limits (between 1 and the maximum entries). It requires kernel v5.6.
+
+Arguments:
+
+- keys is the list of keys to be updated
+- values is the list containing the new values.
+
+
+### 10. print_log2_hist()
 
 Syntax: ```table.print_log2_hist(val_type="value", section_header="Bucket ptr", section_print_fn=None)```
 
@@ -2025,7 +2264,7 @@ Examples in situ:
 [search /examples](https://github.com/iovisor/bcc/search?q=print_log2_hist+path%3Aexamples+language%3Apython&type=Code),
 [search /tools](https://github.com/iovisor/bcc/search?q=print_log2_hist+path%3Atools+language%3Apython&type=Code)
 
-### 8. print_linear_hist()
+### 11. print_linear_hist()
 
 Syntax: ```table.print_linear_hist(val_type="value", section_header="Bucket ptr", section_print_fn=None)```
 
@@ -2084,7 +2323,7 @@ Examples in situ:
 [search /examples](https://github.com/iovisor/bcc/search?q=print_linear_hist+path%3Aexamples+language%3Apython&type=Code),
 [search /tools](https://github.com/iovisor/bcc/search?q=print_linear_hist+path%3Atools+language%3Apython&type=Code)
 
-### 9. open_ring_buffer()
+### 12. open_ring_buffer()
 
 Syntax: ```table.open_ring_buffer(callback, ctx=None)```
 
@@ -2146,7 +2385,7 @@ def print_event(ctx, data, size):
 Examples in situ:
 [search /examples](https://github.com/iovisor/bcc/search?q=open_ring_buffer+path%3Aexamples+language%3Apython&type=Code),
 
-### 10. push()
+### 13. push()
 
 Syntax: ```table.push(leaf, flags=0)```
 
@@ -2156,7 +2395,7 @@ Passing QueueStack.BPF_EXIST as a flag causes the Queue or Stack to discard the 
 Examples in situ:
 [search /tests](https://github.com/iovisor/bcc/search?q=push+path%3Atests+language%3Apython&type=Code),
 
-### 11. pop()
+### 14. pop()
 
 Syntax: ```leaf = table.pop()```
 
@@ -2167,7 +2406,7 @@ Raises a KeyError exception if the operation does not succeed.
 Examples in situ:
 [search /tests](https://github.com/iovisor/bcc/search?q=pop+path%3Atests+language%3Apython&type=Code),
 
-### 12. peek()
+### 15. peek()
 
 Syntax: ```leaf = table.peek()```
 

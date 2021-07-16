@@ -38,11 +38,13 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <libgen.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/vfs.h>
 #include <unistd.h>
 #include <linux/if_alg.h>
 
@@ -92,6 +94,10 @@
 #define UNUSED(expr) do { (void)(expr); } while (0)
 
 #define PERF_UPROBE_REF_CTR_OFFSET_SHIFT 32
+
+#ifndef BPF_FS_MAGIC
+#define BPF_FS_MAGIC		0xcafe4a11
+#endif
 
 struct bpf_helper {
   char *name;
@@ -263,6 +269,7 @@ static struct bpf_helper helpers[] = {
   {"sock_from_file", "5.11"},
   {"check_mtu", "5.12"},
   {"for_each_map_elem", "5.13"},
+  {"snprintf", "5.13"},
 };
 
 static uint64_t ptr_to_u64(void *ptr)
@@ -358,8 +365,25 @@ int bpf_lookup_and_delete(int fd, void *key, void *value)
   return bpf_map_lookup_and_delete_elem(fd, key, value);
 }
 
-int bpf_lookup_and_delete_batch(int fd, __u32 *in_batch, __u32 *out_batch, void *keys,
-                                void *values, __u32 *count)
+int bpf_lookup_batch(int fd, __u32 *in_batch, __u32 *out_batch, void *keys,
+                     void *values, __u32 *count)
+{
+  return bpf_map_lookup_batch(fd, in_batch, out_batch, keys, values, count,
+                              NULL);
+}
+
+int bpf_delete_batch(int fd,  void *keys, __u32 *count)
+{
+  return bpf_map_delete_batch(fd, keys, count, NULL);
+}
+
+int bpf_update_batch(int fd, void *keys, void *values, __u32 *count)
+{
+  return bpf_map_update_batch(fd, keys, values, count, NULL);
+}
+
+int bpf_lookup_and_delete_batch(int fd, __u32 *in_batch, __u32 *out_batch,
+                                void *keys, void *values, __u32 *count)
 {
   return bpf_map_lookup_and_delete_batch(fd, in_batch, out_batch, keys, values,
                                          count, NULL);
@@ -1389,7 +1413,7 @@ int bpf_attach_xdp(const char *dev_name, int progfd, uint32_t flags) {
   ret = bpf_set_link_xdp_fd(ifindex, progfd, flags);
   if (ret) {
     libbpf_strerror(ret, err_buf, sizeof(err_buf));
-    fprintf(stderr, "bpf: Attaching prog to %s: %s", dev_name, err_buf);
+    fprintf(stderr, "bpf: Attaching prog to %s: %s\n", dev_name, err_buf);
     return -1;
   }
 
@@ -1508,4 +1532,50 @@ int bcc_iter_attach(int prog_fd, union bpf_iter_link_info *link_info,
 int bcc_iter_create(int link_fd)
 {
     return bpf_iter_create(link_fd);
+}
+
+int bcc_make_parent_dir(const char *path) {
+  int   err = 0;
+  char *dname, *dir;
+
+  dname = strdup(path);
+  if (dname == NULL)
+    return -ENOMEM;
+
+  dir = dirname(dname);
+  if (mkdir(dir, 0700) && errno != EEXIST)
+    err = -errno;
+
+  free(dname);
+  if (err)
+    fprintf(stderr, "failed to mkdir %s: %s\n", path, strerror(-err));
+
+  return err;
+}
+
+int bcc_check_bpffs_path(const char *path) {
+  struct statfs st_fs;
+  char  *dname, *dir;
+  int    err = 0;
+
+  if (path == NULL)
+    return -EINVAL;
+
+  dname = strdup(path);
+  if (dname == NULL)
+    return -ENOMEM;
+
+  dir = dirname(dname);
+  if (statfs(dir, &st_fs)) {
+    err = -errno;
+    fprintf(stderr, "failed to statfs %s: %s\n", path, strerror(-err));
+  }
+
+  free(dname);
+  if (!err && st_fs.f_type != BPF_FS_MAGIC) {
+    err = -EINVAL;
+    fprintf(stderr, "specified path %s is not on BPF FS\n", path);
+  }
+
+  return err;
 }

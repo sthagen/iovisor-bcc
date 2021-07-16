@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause)
 /* Copyright (c) 2021 Google LLC. */
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -159,7 +161,7 @@ int resolve_binary_path(const char *binary, pid_t pid, char *path, size_t path_s
  * Opens an elf at `path` of kind ELF_K_ELF.  Returns NULL on failure.  On
  * success, close with close_elf(e, fd_close).
  */
-static Elf *open_elf(const char *path, int *fd_close)
+Elf *open_elf(const char *path, int *fd_close)
 {
 	int fd;
 	Elf *e;
@@ -189,7 +191,30 @@ static Elf *open_elf(const char *path, int *fd_close)
 	return e;
 }
 
-static void close_elf(Elf *e, int fd_close)
+Elf *open_elf_by_fd(int fd)
+{
+	Elf *e;
+
+	if (elf_version(EV_CURRENT) == EV_NONE) {
+		warn("elf init failed\n");
+		return NULL;
+	}
+	e = elf_begin(fd, ELF_C_READ, NULL);
+	if (!e) {
+		warn("elf_begin failed: %s\n", elf_errmsg(-1));
+		close(fd);
+		return NULL;
+	}
+	if (elf_kind(e) != ELF_K_ELF) {
+		warn("elf kind %d is not ELF_K_ELF\n", elf_kind(e));
+		elf_end(e);
+		close(fd);
+		return NULL;
+	}
+	return e;
+}
+
+void close_elf(Elf *e, int fd_close)
 {
 	elf_end(e);
 	close(fd_close);
@@ -203,12 +228,17 @@ off_t get_elf_func_offset(const char *path, const char *func)
 	Elf *e;
 	Elf_Scn *scn;
 	Elf_Data *data;
+	GElf_Ehdr ehdr;
 	GElf_Shdr shdr[1];
+	GElf_Phdr phdr;
 	GElf_Sym sym[1];
-	size_t shstrndx;
+	size_t shstrndx, nhdrs;
 	char *n;
 
 	e = open_elf(path, &fd);
+
+	if (!gelf_getehdr(e, &ehdr))
+		goto out;
 
 	if (elf_getshdrstrndx(e, &shstrndx) != 0)
 		goto out;
@@ -229,12 +259,30 @@ off_t get_elf_func_offset(const char *path, const char *func)
 					continue;
 				if (!strcmp(n, func)) {
 					ret = sym->st_value;
-					goto out;
+					goto check;
 				}
 			}
 		}
 	}
 
+check:
+	if (ehdr.e_type == ET_EXEC || ehdr.e_type == ET_DYN) {
+		if (elf_getphdrnum(e, &nhdrs) != 0) {
+			ret = -1;
+			goto out;
+		}
+		for (i = 0; i < (int)nhdrs; i++) {
+			if (!gelf_getphdr(e, i, &phdr))
+				continue;
+			if (phdr.p_type != PT_LOAD || !(phdr.p_flags & PF_X))
+				continue;
+			if (phdr.p_vaddr <= ret && ret < (phdr.p_vaddr + phdr.p_memsz)) {
+				ret = ret - phdr.p_vaddr + phdr.p_offset;
+				goto out;
+			}
+		}
+		ret = -1;
+	}
 out:
 	close_elf(e, fd);
 	return ret;

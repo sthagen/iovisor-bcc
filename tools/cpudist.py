@@ -100,19 +100,13 @@ int sched_switch(struct pt_regs *ctx, struct task_struct *prev)
     u64 pid_tgid = bpf_get_current_pid_tgid();
     u32 tgid = pid_tgid >> 32, pid = pid_tgid;
 
+    u32 prev_pid = prev->pid;
+    u32 prev_tgid = prev->tgid;
 #ifdef ONCPU
-    if (prev->state == TASK_RUNNING) {
+    update_hist(prev_tgid, prev_pid, ts);
 #else
-    if (1) {
+    store_start(prev_tgid, prev_pid, ts);
 #endif
-        u32 prev_pid = prev->pid;
-        u32 prev_tgid = prev->tgid;
-#ifdef ONCPU
-        update_hist(prev_tgid, prev_pid, ts);
-#else
-        store_start(prev_tgid, prev_pid, ts);
-#endif
-    }
 
 BAIL:
 #ifdef ONCPU
@@ -150,7 +144,7 @@ else:
     section = ""
     bpf_text = bpf_text.replace('STORAGE', 'BPF_HISTOGRAM(dist);')
     bpf_text = bpf_text.replace('STORE',
-        'dist.increment(bpf_log2l(delta));')
+        'dist.atomic_increment(bpf_log2l(delta));')
 if debug or args.ebpf:
     print(bpf_text)
     if args.ebpf:

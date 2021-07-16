@@ -899,7 +899,7 @@ bool BTypeVisitor::VisitCallExpr(CallExpr *Call) {
           }
           txt += "}";
           txt += "leaf;})";
-        } else if (memb_name == "increment") {
+        } else if (memb_name == "increment" || memb_name == "atomic_increment") {
           string name = string(Ref->getDecl()->getName());
           string arg0 = rewriter_.getRewrittenText(expansionRange(Call->getArg(0)->getSourceRange()));
 
@@ -913,8 +913,13 @@ bool BTypeVisitor::VisitCallExpr(CallExpr *Call) {
           string update = "bpf_map_update_elem_(bpf_pseudo_fd(1, " + fd + ")";
           txt  = "({ typeof(" + name + ".key) _key = " + arg0 + "; ";
           txt += "typeof(" + name + ".leaf) *_leaf = " + lookup + ", &_key); ";
+          txt += "if (_leaf) ";
 
-          txt += "if (_leaf) (*_leaf) += " + increment_value + ";";
+          if (memb_name == "atomic_increment") {
+            txt += "lock_xadd(_leaf, " + increment_value + ");";
+          } else {
+            txt += "(*_leaf) += " + increment_value + ";";
+          }
           if (desc->second.type == BPF_MAP_TYPE_HASH) {
             txt += "else { typeof(" + name + ".leaf) _zleaf; __builtin_memset(&_zleaf, 0, sizeof(_zleaf)); ";
             txt += "_zleaf += " + increment_value + ";";
@@ -1029,6 +1034,13 @@ bool BTypeVisitor::VisitCallExpr(CallExpr *Call) {
             }
             fe_.perf_events_[name] = perf_event;
           }
+        } else if (memb_name == "msg_redirect_hash" || memb_name == "sk_redirect_hash") {
+          string arg0 = rewriter_.getRewrittenText(expansionRange(Call->getArg(0)->getSourceRange()));
+          string args_other = rewriter_.getRewrittenText(expansionRange(SourceRange(GET_BEGINLOC(Call->getArg(1)),
+                                                           GET_ENDLOC(Call->getArg(2)))));
+
+          txt = "bpf_" + string(memb_name) + "(" + arg0 + ", (void *)bpf_pseudo_fd(1, " + fd + "), ";
+          txt += args_other + ")";
         } else {
           if (memb_name == "lookup") {
             prefix = "bpf_map_lookup_elem";
@@ -1392,24 +1404,36 @@ bool BTypeVisitor::VisitVarDecl(VarDecl *Decl) {
       ++i;
     }
 
-    std::string section_attr = string(A->getName());
+    std::string section_attr = string(A->getName()), pinned;
     size_t pinned_path_pos = section_attr.find(":");
-    unsigned int pinned_id = 0; // 0 is not a valid map ID, they start with 1
+    // 0 is not a valid map ID, -1 is to create and pin it to file
+    int pinned_id = 0;
 
     if (pinned_path_pos != std::string::npos) {
-      std::string pinned = section_attr.substr(pinned_path_pos + 1);
+      pinned = section_attr.substr(pinned_path_pos + 1);
       section_attr = section_attr.substr(0, pinned_path_pos);
       int fd = bpf_obj_get(pinned.c_str());
-      struct bpf_map_info info = {};
-      unsigned int info_len = sizeof(info);
+      if (fd < 0) {
+        if (bcc_make_parent_dir(pinned.c_str()) ||
+            bcc_check_bpffs_path(pinned.c_str())) {
+          return false;
+        }
 
-      if (bpf_obj_get_info_by_fd(fd, &info, &info_len)) {
-        error(GET_BEGINLOC(Decl), "map not found: %0") << pinned;
-        return false;
+        pinned_id = -1;
+      } else {
+        struct bpf_map_info info = {};
+        unsigned int info_len = sizeof(info);
+
+        if (bpf_obj_get_info_by_fd(fd, &info, &info_len)) {
+          error(GET_BEGINLOC(Decl), "get map info failed: %0")
+                << strerror(errno);
+          return false;
+        }
+
+        pinned_id = info.id;
       }
 
       close(fd);
-      pinned_id = info.id;
     }
 
     // Additional map specific information
@@ -1535,7 +1559,7 @@ bool BTypeVisitor::VisitVarDecl(VarDecl *Decl) {
       fe_.add_map_def(table.fake_fd, std::make_tuple((int)map_type, std::string(table.name),
                       (int)table.key_size, (int)table.leaf_size,
                       (int)table.max_entries, table.flags, pinned_id,
-                      inner_map_name));
+                      inner_map_name, pinned));
     }
 
     if (!table.is_extern)

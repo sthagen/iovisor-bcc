@@ -83,9 +83,17 @@ lib.bpf_update_elem.argtypes = [ct.c_int, ct.c_void_p, ct.c_void_p,
         ct.c_ulonglong]
 lib.bpf_delete_elem.restype = ct.c_int
 lib.bpf_delete_elem.argtypes = [ct.c_int, ct.c_void_p]
+lib.bpf_delete_batch.restype = ct.c_int
+lib.bpf_delete_batch.argtypes = [ct.c_int, ct.c_void_p, ct.c_void_p]
+lib.bpf_update_batch.restype = ct.c_int
+lib.bpf_update_batch.argtypes = [ct.c_int, ct.c_void_p, ct.c_void_p,
+        ct.POINTER(ct.c_uint32)]
+lib.bpf_lookup_batch.restype = ct.c_int
+lib.bpf_lookup_batch.argtypes = [ct.c_int, ct.POINTER(ct.c_uint32),
+        ct.POINTER(ct.c_uint32), ct.c_void_p, ct.c_void_p, ct.c_void_p]
 lib.bpf_lookup_and_delete_batch.restype = ct.c_int
 lib.bpf_lookup_and_delete_batch.argtypes = [ct.c_int, ct.POINTER(ct.c_uint32),
-        ct.POINTER(ct.c_uint32),ct.c_void_p, ct.c_void_p, ct.c_void_p]
+        ct.POINTER(ct.c_uint32), ct.c_void_p, ct.c_void_p, ct.c_void_p]
 lib.bpf_open_raw_sock.restype = ct.c_int
 lib.bpf_open_raw_sock.argtypes = [ct.c_char_p]
 lib.bpf_attach_socket.restype = ct.c_int
@@ -115,6 +123,10 @@ lib.bpf_attach_kfunc.restype = ct.c_int
 lib.bpf_attach_kfunc.argtypes = [ct.c_int]
 lib.bpf_attach_lsm.restype = ct.c_int
 lib.bpf_attach_lsm.argtypes = [ct.c_int]
+lib.bpf_prog_attach.restype = ct.c_int
+lib.bpf_prog_attach.argtype = [ct.c_int, ct.c_int, ct.c_int, ct.c_uint]
+lib.bpf_prog_detach2.restype = ct.c_int
+lib.bpf_prog_detach2.argtype = [ct.c_int, ct.c_int, ct.c_int]
 lib.bpf_has_kernel_btf.restype = ct.c_bool
 lib.bpf_has_kernel_btf.argtypes = None
 lib.bpf_open_perf_buffer.restype = ct.c_void_p

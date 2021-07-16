@@ -20,7 +20,7 @@ import argparse
 
 # arguments
 examples = """examples:
-    ./readahead -d 20       # monitor for 10 seconds and generate stats 
+    ./readahead -d 20       # monitor for 20 seconds and generate stats
 """
 
 parser = argparse.ArgumentParser(
@@ -69,9 +69,7 @@ int exit__page_cache_alloc(struct pt_regs *ctx) {
     if (f != NULL && *f == 1) {
         ts = bpf_ktime_get_ns();
         birth.update(&retval, &ts);
-
-        u64 *count = pages.lookup(&zero);
-        if (count) (*count)++; // increment read ahead pages count
+        pages.atomic_increment(zero);
     }
     return 0;
 }
@@ -83,11 +81,8 @@ int entry_mark_page_accessed(struct pt_regs *ctx) {
     u64 *bts = birth.lookup(&arg0);
     if (bts != NULL) {
         delta = bpf_ktime_get_ns() - *bts;
-        dist.increment(bpf_log2l(delta/1000000));
-
-        u64 *count = pages.lookup(&zero);
-        if (count) (*count)--; // decrement read ahead pages count
-
+        dist.atomic_increment(bpf_log2l(delta/1000000));
+        pages.atomic_increment(zero, -1);
         birth.delete(&arg0); // remove the entry from hashmap
     }
     return 0;
@@ -95,15 +90,19 @@ int entry_mark_page_accessed(struct pt_regs *ctx) {
 """
 
 b = BPF(text=program)
-b.attach_kprobe(event="__do_page_cache_readahead", fn_name="entry__do_page_cache_readahead")
-b.attach_kretprobe(event="__do_page_cache_readahead", fn_name="exit__do_page_cache_readahead")
+if BPF.get_kprobe_functions(b"__do_page_cache_readahead"):
+    ra_event = "__do_page_cache_readahead"
+else:
+    ra_event = "do_page_cache_ra"
+b.attach_kprobe(event=ra_event, fn_name="entry__do_page_cache_readahead")
+b.attach_kretprobe(event=ra_event, fn_name="exit__do_page_cache_readahead")
 b.attach_kretprobe(event="__page_cache_alloc", fn_name="exit__page_cache_alloc")
 b.attach_kprobe(event="mark_page_accessed", fn_name="entry_mark_page_accessed")
 
 # header
 print("Tracing... Hit Ctrl-C to end.")
 
-# print 
+# print
 def print_stats():
     print()
     print("Read-ahead unused pages: %d" % (b["pages"][ct.c_ulong(0)].value))
