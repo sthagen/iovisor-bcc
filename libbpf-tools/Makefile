@@ -27,13 +27,17 @@ APPS = \
 	cpufreq \
 	drsnoop \
 	execsnoop \
+	exitsnoop \
 	filelife \
+	filetop \
 	fsdist \
 	fsslower \
 	funclatency \
 	gethostlatency \
 	hardirqs \
+	ksnoop \
 	llcstat \
+	mountsnoop \
 	numamove \
 	offcputime \
 	opensnoop \
@@ -47,6 +51,7 @@ APPS = \
 	syscount \
 	tcpconnect \
 	tcpconnlat \
+	tcprtt \
 	vfsstat \
 	#
 

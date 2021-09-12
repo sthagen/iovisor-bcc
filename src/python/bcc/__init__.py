@@ -141,6 +141,34 @@ class PerfSWConfig:
     DUMMY = 9
     BPF_OUTPUT = 10
 
+class PerfEventSampleFormat:
+    # from perf_event_sample_format in uapi/linux/bpf.h
+    IP = (1 << 0)
+    TID = (1 << 1)
+    TIME = (1 << 2)
+    ADDR = (1 << 3)
+    READ = (1 << 4)
+    CALLCHAIN = (1 << 5)
+    ID = (1 << 6)
+    CPU = (1 << 7)
+    PERIOD = (1 << 8)
+    STREAM_ID = (1 << 9)
+    RAW = (1 << 10)
+    BRANCH_STACK = (1 << 11)
+    REGS_USER = (1 << 12)
+    STACK_USER = (1 << 13)
+    WEIGHT = (1 << 14)
+    DATA_SRC = (1 << 15)
+    IDENTIFIER = (1 << 16)
+    TRANSACTION = (1 << 17)
+    REGS_INTR = (1 << 18)
+    PHYS_ADDR = (1 << 19)
+    AUX = (1 << 20)
+    CGROUP = (1 << 21)
+    DATA_PAGE_SIZE = (1 << 22)
+    CODE_PAGE_SIZE = (1 << 23)
+    WEIGHT_STRUCT = (1 << 24)
+
 class BPFProgType:
     # From bpf_prog_type in uapi/linux/bpf.h
     SOCKET_FILTER = 1
@@ -727,14 +755,16 @@ class BPF(object):
         if _num_open_probes + num_new_probes > _probe_limit:
             raise Exception("Number of open probes would exceed global quota")
 
-    def _add_kprobe_fd(self, name, fd):
+    def _add_kprobe_fd(self, ev_name, fn_name, fd):
         global _num_open_probes
-        self.kprobe_fds[name] = fd
+        if ev_name not in self.kprobe_fds:
+            self.kprobe_fds[ev_name] = {}
+        self.kprobe_fds[ev_name][fn_name] = fd
         _num_open_probes += 1
 
-    def _del_kprobe_fd(self, name):
+    def _del_kprobe_fd(self, ev_name, fn_name):
         global _num_open_probes
-        del self.kprobe_fds[name]
+        del self.kprobe_fds[ev_name][fn_name]
         _num_open_probes -= 1
 
     def _add_uprobe_fd(self, name, fd):
@@ -802,7 +832,7 @@ class BPF(object):
         if fd < 0:
             raise Exception("Failed to attach BPF program %s to kprobe %s" %
                             (fn_name, event))
-        self._add_kprobe_fd(ev_name, fd)
+        self._add_kprobe_fd(ev_name, fn_name, fd)
         return self
 
     def attach_kretprobe(self, event=b"", fn_name=b"", event_re=b"", maxactive=0):
@@ -834,29 +864,47 @@ class BPF(object):
         if fd < 0:
             raise Exception("Failed to attach BPF program %s to kretprobe %s" %
                             (fn_name, event))
-        self._add_kprobe_fd(ev_name, fd)
+        self._add_kprobe_fd(ev_name, fn_name, fd)
         return self
 
     def detach_kprobe_event(self, ev_name):
+        ev_name = _assert_is_bytes(ev_name)
+        fn_names = list(self.kprobe_fds[ev_name].keys())
+        for fn_name in fn_names:
+            self.detach_kprobe_event_by_fn(ev_name, fn_name)
+
+    def detach_kprobe_event_by_fn(self, ev_name, fn_name):
+        ev_name = _assert_is_bytes(ev_name)
+        fn_name = _assert_is_bytes(fn_name)
         if ev_name not in self.kprobe_fds:
             raise Exception("Kprobe %s is not attached" % ev_name)
-        res = lib.bpf_close_perf_event_fd(self.kprobe_fds[ev_name])
+        res = lib.bpf_close_perf_event_fd(self.kprobe_fds[ev_name][fn_name])
         if res < 0:
             raise Exception("Failed to close kprobe FD")
-        res = lib.bpf_detach_kprobe(ev_name)
-        if res < 0:
-            raise Exception("Failed to detach BPF from kprobe")
-        self._del_kprobe_fd(ev_name)
+        self._del_kprobe_fd(ev_name, fn_name)
+        if len(self.kprobe_fds[ev_name]) == 0:
+            res = lib.bpf_detach_kprobe(ev_name)
+            if res < 0:
+                raise Exception("Failed to detach BPF from kprobe")
 
-    def detach_kprobe(self, event):
+    def detach_kprobe(self, event, fn_name=None):
         event = _assert_is_bytes(event)
         ev_name = b"p_" + event.replace(b"+", b"_").replace(b".", b"_")
-        self.detach_kprobe_event(ev_name)
+        if fn_name:
+            fn_name = _assert_is_bytes(fn_name)
+            self.detach_kprobe_event_by_fn(ev_name, fn_name)
+        else:
+            self.detach_kprobe_event(ev_name)
 
-    def detach_kretprobe(self, event):
+
+    def detach_kretprobe(self, event, fn_name=None):
         event = _assert_is_bytes(event)
         ev_name = b"r_" + event.replace(b"+", b"_").replace(b".", b"_")
-        self.detach_kprobe_event(ev_name)
+        if fn_name:
+            fn_name = _assert_is_bytes(fn_name)
+            self.detach_kprobe_event_by_fn(ev_name, fn_name)
+        else:
+            self.detach_kprobe_event(ev_name)
 
     @staticmethod
     def attach_xdp(dev, fn, flags=0):
@@ -1177,6 +1225,26 @@ class BPF(object):
                 res[i] = self._attach_perf_event(fn.fd, ev_type, ev_config,
                         sample_period, sample_freq, pid, i, group_fd)
         self.open_perf_events[(ev_type, ev_config)] = res
+
+    def _attach_perf_event_raw(self, progfd, attr, pid, cpu, group_fd):
+        res = lib.bpf_attach_perf_event_raw(progfd, ct.byref(attr), pid,
+                cpu, group_fd, 0)
+        if res < 0:
+            raise Exception("Failed to attach BPF to perf raw event")
+        return res
+
+    def attach_perf_event_raw(self, attr=-1, fn_name=b"", pid=-1, cpu=-1, group_fd=-1):
+        fn_name = _assert_is_bytes(fn_name)
+        fn = self.load_func(fn_name, BPF.PERF_EVENT)
+        res = {}
+        if cpu >= 0:
+            res[cpu] = self._attach_perf_event_raw(fn.fd, attr,
+                    pid, cpu, group_fd)
+        else:
+            for i in get_online_cpus():
+                res[i] = self._attach_perf_event_raw(fn.fd, attr,
+                        pid, i, group_fd)
+        self.open_perf_events[(attr.type, attr.config)] = res
 
     def detach_perf_event(self, ev_type=-1, ev_config=-1):
         try:
