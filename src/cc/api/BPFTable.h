@@ -48,7 +48,7 @@ class BPFQueueStackTableBase {
   StatusTuple leaf_to_string(const ValueType* value, std::string& value_str) {
     char buf[8 * desc.leaf_size];
     StatusTuple rc = desc.leaf_snprintf(buf, sizeof(buf), value);
-    if (!rc.code())
+    if (rc.ok())
       value_str.assign(buf);
     return rc;
   }
@@ -90,7 +90,7 @@ class BPFTableBase {
   StatusTuple key_to_string(const KeyType* key, std::string& key_str) {
     char buf[8 * desc.key_size];
     StatusTuple rc = desc.key_snprintf(buf, sizeof(buf), key);
-    if (!rc.code())
+    if (rc.ok())
       key_str.assign(buf);
     return rc;
   }
@@ -98,7 +98,7 @@ class BPFTableBase {
   StatusTuple leaf_to_string(const ValueType* value, std::string& value_str) {
     char buf[8 * desc.leaf_size];
     StatusTuple rc = desc.leaf_snprintf(buf, sizeof(buf), value);
-    if (!rc.code())
+    if (rc.ok())
       value_str.assign(buf);
     return rc;
   }
@@ -312,7 +312,7 @@ class BPFHashTable : public BPFTableBase<KeyType, ValueType> {
 
     while (true) {
       r = get_value(cur, value);
-      if (r.code() != 0)
+      if (!r.ok())
         break;
       res.emplace_back(cur, value);
       if (!this->next(&cur, &cur))
@@ -541,6 +541,64 @@ class BPFSkStorageTable : public BPFTableBase<int, ValueType> {
 
   virtual StatusTuple remove_value(const int& sock_fd) {
     if (!this->remove(const_cast<int*>(&sock_fd)))
+      return StatusTuple(-1, "Error removing value: %s", std::strerror(errno));
+    return StatusTuple::OK();
+  }
+};
+
+template <class ValueType>
+class BPFInodeStorageTable : public BPFTableBase<int, ValueType> {
+ public:
+  BPFInodeStorageTable(const TableDesc& desc) : BPFTableBase<int, ValueType>(desc) {
+    if (desc.type != BPF_MAP_TYPE_INODE_STORAGE)
+      throw std::invalid_argument("Table '" + desc.name +
+                                  "' is not a inode_storage table");
+  }
+
+  virtual StatusTuple get_value(const int& fd, ValueType& value) {
+    if (!this->lookup(const_cast<int*>(&fd), get_value_addr(value)))
+      return StatusTuple(-1, "Error getting value: %s", std::strerror(errno));
+    return StatusTuple::OK();
+  }
+
+  virtual StatusTuple update_value(const int& fd, const ValueType& value) {
+    if (!this->update(const_cast<int*>(&fd),
+                      get_value_addr(const_cast<ValueType&>(value))))
+      return StatusTuple(-1, "Error updating value: %s", std::strerror(errno));
+    return StatusTuple::OK();
+  }
+
+  virtual StatusTuple remove_value(const int& fd) {
+    if (!this->remove(const_cast<int*>(&fd)))
+      return StatusTuple(-1, "Error removing value: %s", std::strerror(errno));
+    return StatusTuple::OK();
+  }
+};
+
+template <class ValueType>
+class BPFTaskStorageTable : public BPFTableBase<int, ValueType> {
+ public:
+  BPFTaskStorageTable(const TableDesc& desc) : BPFTableBase<int, ValueType>(desc) {
+    if (desc.type != BPF_MAP_TYPE_TASK_STORAGE)
+      throw std::invalid_argument("Table '" + desc.name +
+                                  "' is not a task_storage table");
+  }
+
+  virtual StatusTuple get_value(const int& fd, ValueType& value) {
+    if (!this->lookup(const_cast<int*>(&fd), get_value_addr(value)))
+      return StatusTuple(-1, "Error getting value: %s", std::strerror(errno));
+    return StatusTuple::OK();
+  }
+
+  virtual StatusTuple update_value(const int& fd, const ValueType& value) {
+    if (!this->update(const_cast<int*>(&fd),
+                      get_value_addr(const_cast<ValueType&>(value))))
+      return StatusTuple(-1, "Error updating value: %s", std::strerror(errno));
+    return StatusTuple::OK();
+  }
+
+  virtual StatusTuple remove_value(const int& fd) {
+    if (!this->remove(const_cast<int*>(&fd)))
       return StatusTuple(-1, "Error removing value: %s", std::strerror(errno));
     return StatusTuple::OK();
   }

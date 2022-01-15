@@ -414,6 +414,30 @@ __attribute__((section("maps/sk_storage"))) \
 struct _name##_table_t _name = { .flags = BPF_F_NO_PREALLOC }; \
 BPF_ANNOTATE_KV_PAIR(_name, int, _leaf_type)
 
+#define BPF_INODE_STORAGE(_name, _leaf_type) \
+struct _name##_table_t { \
+  int key; \
+  _leaf_type leaf; \
+  void * (*inode_storage_get) (void *, void *, int); \
+  int (*inode_storage_delete) (void *); \
+  u32 flags; \
+}; \
+__attribute__((section("maps/inode_storage"))) \
+struct _name##_table_t _name = { .flags = BPF_F_NO_PREALLOC }; \
+BPF_ANNOTATE_KV_PAIR(_name, int, _leaf_type)
+
+#define BPF_TASK_STORAGE(_name, _leaf_type) \
+struct _name##_table_t { \
+  int key; \
+  _leaf_type leaf; \
+  void * (*task_storage_get) (void *, void *, int); \
+  int (*task_storage_delete) (void *); \
+  u32 flags; \
+}; \
+__attribute__((section("maps/task_storage"))) \
+struct _name##_table_t _name = { .flags = BPF_F_NO_PREALLOC }; \
+BPF_ANNOTATE_KV_PAIR(_name, int, _leaf_type)
+
 #define BPF_SOCKMAP_COMMON(_name, _max_entries, _kind, _helper_name) \
 struct _name##_table_t { \
   u32 key; \
@@ -914,6 +938,20 @@ static long (*bpf_trace_vprintk)(const char *fmt, __u32 fmt_size, const void *da
   (void *)BPF_FUNC_trace_vprintk;
 static struct unix_sock *(*bpf_skc_to_unix_sock)(void *sk) =
   (void *)BPF_FUNC_skc_to_unix_sock;
+static long (*bpf_kallsyms_lookup_name)(const char *name, int name_sz, int flags,
+				__u64 *res) =
+  (void *)BPF_FUNC_kallsyms_lookup_name;
+static long (*bpf_find_vma)(struct task_struct *task, __u64 addr, void *callback_fn,
+			    void *callback_ctx, __u64 flags) =
+  (void *)BPF_FUNC_find_vma;
+static long (*bpf_loop)(__u32 nr_loops, void *callback_fn, void *callback_ctx, __u64 flags) =
+  (void *)BPF_FUNC_loop;
+static long (*bpf_strncmp)(const char *s1, __u32 s1_sz, const char *s2) =
+  (void *)BPF_FUNC_strncmp;
+static long (*bpf_get_func_arg)(void *ctx, __u32 n, __u64 *value) =
+  (void *)BPF_FUNC_get_func_arg;
+static long (*bpf_get_func_ret)(void *ctx, __u64 *value) = (void *)BPF_FUNC_get_func_ret;
+static long (*bpf_get_func_arg_cnt)(void *ctx) = (void *)BPF_FUNC_get_func_arg_cnt;
 
 /* llvm builtin functions that eBPF C program may use to
  * emit BPF_LD_ABS and BPF_LD_IND instructions
@@ -1341,14 +1379,20 @@ static int ____##name(unsigned long long *ctx, ##args)
         do {                                                              \
             unsigned short __offset = args->data_loc_##field & 0xFFFF;    \
             bpf_probe_read((void *)dst, length, (char *)args + __offset); \
-        } while (0);
+        } while (0)
 
 #define TP_DATA_LOC_READ(dst, field)                                        \
         do {                                                                \
             unsigned short __offset = args->data_loc_##field & 0xFFFF;      \
             unsigned short __length = args->data_loc_##field >> 16;         \
             bpf_probe_read((void *)dst, __length, (char *)args + __offset); \
-        } while (0);
+        } while (0)
+
+#define TP_DATA_LOC_READ_STR(dst, field, length)                                \
+        do {                                                                    \
+            unsigned short __offset = args->data_loc_##field & 0xFFFF;          \
+            bpf_probe_read_str((void *)dst, length, (char *)args + __offset);   \
+        } while (0)
 
 #endif
 )********"

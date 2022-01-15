@@ -946,6 +946,9 @@ bool BTypeVisitor::VisitCallExpr(CallExpr *Call) {
             std::vector<std::string> perf_event;
 
             for (auto it = r->field_begin(); it != r->field_end(); ++it) {
+              // After LLVM commit aee49255074f
+              // (https://github.com/llvm/llvm-project/commit/aee49255074fd4ef38d97e6e70cbfbf2f9fd0fa7)
+              // array type change from `comm#char [16]` to `comm#char[16]`
               perf_event.push_back(it->getNameAsString() + "#" + it->getType().getAsString()); //"pid#u32"
             }
             fe_.perf_events_[name] = perf_event;
@@ -1077,6 +1080,18 @@ bool BTypeVisitor::VisitCallExpr(CallExpr *Call) {
             suffix = ")";
           } else if (memb_name == "sk_storage_delete") {
             prefix = "bpf_sk_storage_delete";
+            suffix = ")";
+          } else if (memb_name == "inode_storage_get") {
+            prefix = "bpf_inode_storage_get";
+            suffix = ")";
+          } else if (memb_name == "inode_storage_delete") {
+            prefix = "bpf_inode_storage_delete";
+            suffix = ")";
+          } else if (memb_name == "task_storage_get") {
+            prefix = "bpf_task_storage_get";
+            suffix = ")";
+          } else if (memb_name == "task_storage_delete") {
+            prefix = "bpf_task_storage_delete";
             suffix = ")";
           } else if (memb_name == "get_local_storage") {
             prefix = "bpf_get_local_storage";
@@ -1507,6 +1522,10 @@ bool BTypeVisitor::VisitVarDecl(VarDecl *Decl) {
       map_type = BPF_MAP_TYPE_ARRAY_OF_MAPS;
     } else if (section_attr == "maps/sk_storage") {
       map_type = BPF_MAP_TYPE_SK_STORAGE;
+    } else if (section_attr == "maps/inode_storage") {
+      map_type = BPF_MAP_TYPE_INODE_STORAGE;
+    } else if (section_attr == "maps/task_storage") {
+      map_type = BPF_MAP_TYPE_TASK_STORAGE;
     } else if (section_attr == "maps/sockmap") {
       map_type = BPF_MAP_TYPE_SOCKMAP;
     } else if (section_attr == "maps/sockhash") {
