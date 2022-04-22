@@ -16,6 +16,7 @@
 #include <bpf/bpf.h>
 #include "runqlen.h"
 #include "runqlen.skel.h"
+#include "btf_helpers.h"
 #include "trace_helpers.h"
 
 #define max(x, y) ({				 \
@@ -29,7 +30,7 @@ struct env {
 	bool runqocc;
 	bool timestamp;
 	time_t interval;
-	bool freq;
+	int freq;
 	int times;
 	bool verbose;
 } env = {
@@ -171,12 +172,13 @@ static struct hist zero;
 
 static void print_runq_occupancy(struct runqlen_bpf__bss *bss)
 {
-	__u64 samples, idle = 0, queued = 0;
 	struct hist hist;
 	int slot, i = 0;
 	float runqocc;
 
 	do {
+		__u64 samples, idle = 0, queued = 0;
+
 		hist = bss->hists[i];
 		bss->hists[i] = zero;
 		for (slot = 0; slot < MAX_SLOTS; slot++) {
@@ -213,6 +215,7 @@ static void print_linear_hists(struct runqlen_bpf__bss *bss)
 
 int main(int argc, char **argv)
 {
+	LIBBPF_OPTS(bpf_object_open_opts, open_opts);
 	static const struct argp argp = {
 		.options = opts,
 		.parser = parse_arg,
@@ -244,7 +247,13 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	obj = runqlen_bpf__open();
+	err = ensure_core_btf(&open_opts);
+	if (err) {
+		fprintf(stderr, "failed to fetch necessary BTF for CO-RE: %s\n", strerror(-err));
+		return 1;
+	}
+
+	obj = runqlen_bpf__open_opts(&open_opts);
 	if (!obj) {
 		fprintf(stderr, "failed to open BPF object\n");
 		return 1;
@@ -296,6 +305,7 @@ cleanup:
 	for (i = 0; i < nr_cpus; i++)
 		bpf_link__destroy(links[i]);
 	runqlen_bpf__destroy(obj);
+	cleanup_core_btf(&open_opts);
 
 	return err != 0;
 }
