@@ -144,7 +144,7 @@ class BPFModule {
                     const char *license, unsigned kern_version,
                     int log_level, char *log_buf, unsigned log_buf_size,
                     const char *dev_name = nullptr,
-                    unsigned flags = 0);
+                    unsigned flags = 0, int attach_type = -1);
   int bcc_func_attach(int prog_fd, int attachable_fd,
                       int attach_type, unsigned int flags);
   int bcc_func_detach(int prog_fd, int attachable_fd, int attach_type);
