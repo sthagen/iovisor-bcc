@@ -42,6 +42,7 @@ APPS = \
 	klockstat \
 	ksnoop \
 	llcstat \
+	mdflush \
 	mountsnoop \
 	numamove \
 	offcputime \
@@ -57,6 +58,7 @@ APPS = \
 	syscount \
 	tcpconnect \
 	tcpconnlat \
+	tcplife \
 	tcprtt \
 	tcpsynbl \
 	vfsstat \
