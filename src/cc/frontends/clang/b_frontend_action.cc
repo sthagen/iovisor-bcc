@@ -63,6 +63,10 @@ const char *calling_conv_regs_mips[] = {"regs[4]", "regs[5]", "regs[6]",
 const char *calling_conv_regs_riscv64[] = {"a0", "a1", "a2",
                                        "a3", "a4", "a5"};
 
+const char *calling_conv_regs_loongarch[] = {"regs[4]", "regs[5]", "regs[6]",
+					     "regs[7]", "regs[8]", "regs[9]"};
+
+
 void *get_call_conv_cb(bcc_arch_t arch, bool for_syscall)
 {
   const char **ret;
@@ -83,6 +87,9 @@ void *get_call_conv_cb(bcc_arch_t arch, bool for_syscall)
       break;
     case BCC_ARCH_RISCV64:
       ret = calling_conv_regs_riscv64;
+      break;
+    case BCC_ARCH_LOONGARCH:
+      ret = calling_conv_regs_loongarch;
       break;
     default:
       if (for_syscall)
@@ -336,7 +343,7 @@ ProbeVisitor::ProbeVisitor(ASTContext &C, Rewriter &rewriter,
   C(C), rewriter_(rewriter), m_(m), ctx_(nullptr), track_helpers_(track_helpers),
   addrof_stmt_(nullptr), is_addrof_(false) {
   const char **calling_conv_regs = get_call_conv();
-  has_overlap_kuaddr_ = calling_conv_regs == calling_conv_regs_s390x;
+  cannot_fall_back_safely = (calling_conv_regs == calling_conv_regs_s390x || calling_conv_regs == calling_conv_regs_riscv64);
 }
 
 bool ProbeVisitor::assignsExtPtr(Expr *E, int *nbDerefs) {
@@ -509,7 +516,7 @@ bool ProbeVisitor::VisitUnaryOperator(UnaryOperator *E) {
   memb_visited_.insert(E);
   string pre, post;
   pre = "({ typeof(" + E->getType().getAsString() + ") _val; __builtin_memset(&_val, 0, sizeof(_val));";
-  if (has_overlap_kuaddr_)
+  if (cannot_fall_back_safely)
     pre += " bpf_probe_read_kernel(&_val, sizeof(_val), (u64)";
   else
     pre += " bpf_probe_read(&_val, sizeof(_val), (u64)";
@@ -573,7 +580,7 @@ bool ProbeVisitor::VisitMemberExpr(MemberExpr *E) {
   string base_type = base->getType()->getPointeeType().getAsString();
   string pre, post;
   pre = "({ typeof(" + E->getType().getAsString() + ") _val; __builtin_memset(&_val, 0, sizeof(_val));";
-  if (has_overlap_kuaddr_)
+  if (cannot_fall_back_safely)
     pre += " bpf_probe_read_kernel(&_val, sizeof(_val), (u64)&";
   else
     pre += " bpf_probe_read(&_val, sizeof(_val), (u64)&";
@@ -627,7 +634,7 @@ bool ProbeVisitor::VisitArraySubscriptExpr(ArraySubscriptExpr *E) {
     return true;
 
   pre = "({ typeof(" + E->getType().getAsString() + ") _val; __builtin_memset(&_val, 0, sizeof(_val));";
-  if (has_overlap_kuaddr_)
+  if (cannot_fall_back_safely)
     pre += " bpf_probe_read_kernel(&_val, sizeof(_val), (u64)((";
   else
     pre += " bpf_probe_read(&_val, sizeof(_val), (u64)((";
@@ -724,7 +731,7 @@ DiagnosticBuilder ProbeVisitor::error(SourceLocation loc, const char (&fmt)[N]) 
 BTypeVisitor::BTypeVisitor(ASTContext &C, BFrontendAction &fe)
     : C(C), diag_(C.getDiagnostics()), fe_(fe), rewriter_(fe.rewriter()), out_(llvm::errs()) {
   const char **calling_conv_regs = get_call_conv();
-  has_overlap_kuaddr_ = calling_conv_regs == calling_conv_regs_s390x;
+  cannot_fall_back_safely = (calling_conv_regs == calling_conv_regs_s390x || calling_conv_regs == calling_conv_regs_riscv64);
 }
 
 void BTypeVisitor::genParamDirectAssign(FunctionDecl *D, string& preamble,
@@ -766,7 +773,7 @@ void BTypeVisitor::genParamIndirectAssign(FunctionDecl *D, string& preamble,
       size_t d = idx - 1;
       const char *reg = calling_conv_regs[d];
       preamble += "\n " + text + ";";
-      if (has_overlap_kuaddr_)
+      if (cannot_fall_back_safely)
         preamble += " bpf_probe_read_kernel";
       else
         preamble += " bpf_probe_read";

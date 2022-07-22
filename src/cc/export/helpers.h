@@ -1284,6 +1284,9 @@ int bpf_usdt_readarg_p(int argc, struct pt_regs *ctx, void *buf, u64 len) asm("l
 #elif defined(__TARGET_ARCH_riscv64)
 #define bpf_target_riscv64
 #define bpf_target_defined
+#elif defined(__TARGET_ARCH_loongarch)
+#define bpf_target_loongarch
+#define bpf_target_defined
 #else
 #undef bpf_target_defined
 #endif
@@ -1302,6 +1305,8 @@ int bpf_usdt_readarg_p(int argc, struct pt_regs *ctx, void *buf, u64 len) asm("l
 #define bpf_target_mips
 #elif defined(__riscv) && (__riscv_xlen == 64)
 #define bpf_target_riscv64
+#elif defined(__loongarch__)
+#define bpf_target_loongarch
 #endif
 #endif
 
@@ -1363,17 +1368,31 @@ int bpf_usdt_readarg_p(int argc, struct pt_regs *ctx, void *buf, u64 len) asm("l
 #define PT_REGS_SP(x) ((x)->regs[29])
 #define PT_REGS_IP(x) ((x)->cp0_epc)
 #elif defined(bpf_target_riscv64)
-#define PT_REGS_PARM1(x) ((x)->a0)
-#define PT_REGS_PARM2(x) ((x)->a1)
-#define PT_REGS_PARM3(x) ((x)->a2)
-#define PT_REGS_PARM4(x) ((x)->a3)
-#define PT_REGS_PARM5(x) ((x)->a4)
-#define PT_REGS_PARM6(x) ((x)->a5)
-#define PT_REGS_RET(x) ((x)->ra)
-#define PT_REGS_FP(x) ((x)->s0) /* Works only with CONFIG_FRAME_POINTER */
-#define PT_REGS_RC(x) ((x)->a0)
-#define PT_REGS_SP(x) ((x)->sp)
-#define PT_REGS_IP(x) ((x)->pc)
+/* riscv64 provides struct user_pt_regs instead of struct pt_regs to userspace */
+#define __PT_REGS_CAST(x) ((const struct user_regs_struct *)(x))
+#define PT_REGS_PARM1(x) (__PT_REGS_CAST(x)->a0)
+#define PT_REGS_PARM2(x) (__PT_REGS_CAST(x)->a1)
+#define PT_REGS_PARM3(x) (__PT_REGS_CAST(x)->a2)
+#define PT_REGS_PARM4(x) (__PT_REGS_CAST(x)->a3)
+#define PT_REGS_PARM5(x) (__PT_REGS_CAST(x)->a4)
+#define PT_REGS_PARM6(x) (__PT_REGS_CAST(x)->a5)
+#define PT_REGS_RET(x) (__PT_REGS_CAST(x)->ra)
+#define PT_REGS_FP(x) (__PT_REGS_CAST(x)->s0) /* Works only with CONFIG_FRAME_POINTER */
+#define PT_REGS_RC(x) (__PT_REGS_CAST(x)->a0)
+#define PT_REGS_SP(x) (__PT_REGS_CAST(x)->sp)
+#define PT_REGS_IP(x) (__PT_REGS_CAST(x)->pc)
+#elif defined(bpf_target_loongarch)
+#define PT_REGS_PARM1(x) ((x)->regs[4])
+#define PT_REGS_PARM2(x) ((x)->regs[5])
+#define PT_REGS_PARM3(x) ((x)->regs[6])
+#define PT_REGS_PARM4(x) ((x)->regs[7])
+#define PT_REGS_PARM5(x) ((x)->regs[8])
+#define PT_REGS_PARM6(x) ((x)->regs[9])
+#define PT_REGS_RET(x) ((x)->regs[1])
+#define PT_REGS_FP(x) ((x)->regs[22]) /* Works only with CONFIG_FRAME_POINTER */
+#define PT_REGS_RC(x) ((x)->regs[4])
+#define PT_REGS_SP(x) ((x)->regs[3])
+#define PT_REGS_IP(x) ((x)->csr_era)
 #else
 #error "bcc does not support this platform yet"
 #endif
