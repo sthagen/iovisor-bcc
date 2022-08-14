@@ -97,6 +97,10 @@ CMAKE_DEPENDENT_OPTION(ENABLE_CPP_API "Enable C++ API" ON "ENABLE_USDT" OFF)
 
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 
+if(ENABLE_TESTS)
+  find_package(KernelHeaders)
+endif()
+
 if (CMAKE_USE_LIBBPF_PACKAGE)
   find_package(LibBpf)
 endif()
@@ -131,6 +135,9 @@ find_library(libclangRewrite NAMES clangRewrite clang-cpp HINTS ${CLANG_SEARCH})
 find_library(libclangSema NAMES clangSema clang-cpp HINTS ${CLANG_SEARCH})
 find_library(libclangSerialization NAMES clangSerialization clang-cpp HINTS ${CLANG_SEARCH})
 find_library(libclangASTMatchers NAMES clangASTMatchers clang-cpp HINTS ${CLANG_SEARCH})
+if (${LLVM_PACKAGE_VERSION} VERSION_EQUAL 15 OR ${LLVM_PACKAGE_VERSION} VERSION_GREATER 15)
+  find_library(libclangSupport NAMES clangSupport clang-cpp HINTS ${CLANG_SEARCH})
+endif()
 find_library(libclang-shared libclang-cpp.so HINTS ${CLANG_SEARCH})
 if(libclangBasic STREQUAL "libclangBasic-NOTFOUND")
   message(FATAL_ERROR "Unable to find clang libraries")
@@ -164,7 +171,11 @@ if (USINGISYSTEM AND GCC_VERSION VERSION_LESS 6.0)
 endif()
 
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_STANDARD 14)
+if (${LLVM_PACKAGE_VERSION} VERSION_EQUAL 16 OR ${LLVM_PACKAGE_VERSION} VERSION_GREATER 16)
+  set(CMAKE_CXX_STANDARD 17)
+else()
+  set(CMAKE_CXX_STANDARD 14)
+endif()
 
 endif(NOT PYTHON_ONLY)
 
