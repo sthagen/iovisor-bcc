@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 #
 # trace         Trace a function and print a trace message based on its
 #               parameters, with an optional filter.
@@ -321,44 +321,6 @@ class Probe(object):
                     expr = expr.replace(alias, replacement)
                 return expr
 
-        p_type = {"u": ct.c_uint, "d": ct.c_int, "lu": ct.c_ulong,
-                  "ld": ct.c_long,
-                  "llu": ct.c_ulonglong, "lld": ct.c_longlong,
-                  "hu": ct.c_ushort, "hd": ct.c_short,
-                  "x": ct.c_uint, "lx": ct.c_ulong, "llx": ct.c_ulonglong,
-                  "c": ct.c_ubyte,
-                  "K": ct.c_ulonglong, "U": ct.c_ulonglong}
-
-        def _generate_python_field_decl(self, idx, fields):
-                field_type = self.types[idx]
-                if field_type == "s":
-                        ptype = ct.c_char * self.string_size
-                else:
-                        ptype = Probe.p_type[field_type]
-                fields.append(("v%d" % idx, ptype))
-
-        def _generate_python_data_decl(self):
-                self.python_struct_name = "%s_%d_Data" % \
-                                (self._display_function(), self.probe_num)
-                fields = []
-                if self.time_field:
-                    fields.append(("timestamp_ns", ct.c_ulonglong))
-                if self.print_cpu:
-                    fields.append(("cpu", ct.c_int))
-                fields.extend([
-                        ("tgid", ct.c_uint),
-                        ("pid", ct.c_uint),
-                        ("comm", ct.c_char * 16)       # TASK_COMM_LEN
-                ])
-                for i in range(0, len(self.types)):
-                        self._generate_python_field_decl(i, fields)
-                if self.kernel_stack:
-                        fields.append(("kernel_stack_id", ct.c_int))
-                if self.user_stack:
-                        fields.append(("user_stack_id", ct.c_int))
-                return type(self.python_struct_name, (ct.Structure,),
-                            dict(_fields_=fields))
-
         c_type = {"u": "unsigned int", "d": "int",
                   "lu": "unsigned long", "ld": "long",
                   "llu": "unsigned long long", "lld": "long long",
@@ -612,11 +574,15 @@ BPF_PERF_OUTPUT(%s);
                                        if t == 'K']
                 user_placeholders = [i for i, t in enumerate(self.types)
                                      if t == 'U']
+                string_placeholders = [i for i, t in enumerate(self.types)
+                                       if t == 's']
                 for kp in kernel_placeholders:
-                        values[kp] = bpf.ksym(values[kp], show_offset=True)
+                    values[kp] = bpf.ksym(values[kp], show_offset=True)
                 for up in user_placeholders:
-                        values[up] = bpf.sym(values[up], tgid,
-                                           show_module=True, show_offset=True)
+                    values[up] = bpf.sym(values[up], tgid,
+                                         show_module=True, show_offset=True)
+                for sp in string_placeholders:
+                    values[sp] = values[sp].decode('utf-8', 'replace')
                 return self.python_format % tuple(values)
 
         def print_aggregate_events(self):
@@ -625,9 +591,7 @@ BPF_PERF_OUTPUT(%s);
                     print("%s-->COUNT %d\n\n" % (k, v), end="")
 
         def print_event(self, bpf, cpu, data, size):
-                # Cast as the generated structure type and display
-                # according to the format string in the probe.
-                event = ct.cast(data, ct.POINTER(self.python_struct)).contents
+                event = bpf[self.events_name].event(data)
                 if self.name not in event.comm:
                     return
                 values = list(map(lambda i: getattr(event, "v%d" % i),
@@ -678,7 +642,6 @@ BPF_PERF_OUTPUT(%s);
                         self._attach_k(bpf)
                 else:
                         self._attach_u(bpf)
-                self.python_struct = self._generate_python_data_decl()
                 callback = partial(self.print_event, bpf)
                 bpf[self.events_name].open_perf_buffer(callback,
                         page_cnt=self.page_cnt)
