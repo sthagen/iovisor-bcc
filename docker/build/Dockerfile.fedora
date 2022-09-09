@@ -41,6 +41,10 @@ RUN dnf -y install \
 	python3 \
 	python3-pip
 
+RUN dnf -y install \
+       rust \
+       cargo
+
 RUN if [[ ! -e /usr/bin/python && -e /usr/bin/python3 ]]; then \
         ln -s $(readlink /usr/bin/python3) /usr/bin/python; \
     fi
@@ -51,7 +55,9 @@ RUN dnf -y install \
 	net-tools \
 	hostname \
 	iproute \
-	bpftool
+	bpftool \
+	iperf \
+	netperf
 
 RUN pip3 install pyroute2==0.5.18 netaddr==0.8.0 dnslib==0.9.14 cachetools==3.1.1
 
