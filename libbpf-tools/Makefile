@@ -79,7 +79,9 @@ APPS = \
 	tcpconnlat \
 	tcplife \
 	tcprtt \
+	tcpstates \
 	tcpsynbl \
+	tcptop \
 	vfsstat \
 	wakeuptime \
 	$(BZ_APPS) \
