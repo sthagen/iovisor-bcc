@@ -195,8 +195,11 @@ static int trace_exit(struct pt_regs *ctx, int type)
 
     // populate output struct
     u32 size = PT_REGS_RC(ctx);
-    struct data_t data = {.type = type, .size = size, .delta_us = delta_us,
-        .pid = pid};
+    struct data_t data = {};
+    data.type = type;
+    data.size = size;
+    data.delta_us = delta_us;
+    data.pid = pid;
     data.ts_us = ts / 1000;
     data.offset = valp->offset;
     bpf_get_current_comm(&data.task, sizeof(data.task));
@@ -280,9 +283,14 @@ RAW_TRACEPOINT_PROBE(nfs_commit_done)
         u64 ts = bpf_ktime_get_ns();
         u64 delta_us = (ts - cp->ts) / 1000;
         u32 pid = bpf_get_current_pid_tgid() >> 32;
-        struct data_t data = {.type = TRACE_COMMIT, .offset = cp->offset,
-            .size = cp->count, .ts_us = ts/1000, .delta_us = delta_us,
-            .pid = pid};
+
+        struct data_t data = {};
+        data.type = TRACE_COMMIT;
+        data.offset = cp->offset;
+        data.size = cp->count;
+        data.ts_us = ts/1000;
+        data.delta_us = delta_us;
+        data.pid = pid;
 
         commitinfo.delete(&key);
         bpf_get_current_comm(&data.task, sizeof(data.task));
@@ -325,9 +333,14 @@ int trace_nfs_commit_done(struct pt_regs *ctx, void *task, void *calldata)
         u64 ts = bpf_ktime_get_ns();
         u64 delta_us = (ts - cp->ts) / 1000;
         u32 pid = bpf_get_current_pid_tgid() >> 32;
-        struct data_t data = {.type = TRACE_COMMIT, .offset = cp->offset,
-            .size = cp->count, .ts_us = ts/1000, .delta_us = delta_us,
-            .pid = pid};
+
+        struct data_t data = {};
+        data.type = TRACE_COMMIT;
+        data.offset = cp->offset;
+        data.size = cp->count;
+        data.ts_us = ts/1000;
+        data.delta_us = delta_us;
+        data.pid = pid;
 
         commitinfo.delete(&key);
         bpf_get_current_comm(&data.task, sizeof(data.task));
@@ -417,15 +430,17 @@ b = BPF(text=bpf_text,
     cflags=["-Wno-tautological-constant-out-of-range-compare"])
 b.attach_kprobe(event="nfs_file_read", fn_name="trace_rw_entry")
 b.attach_kprobe(event="nfs_file_write", fn_name="trace_rw_entry")
-b.attach_kprobe(event="nfs4_file_open", fn_name="trace_file_open_entry")
 b.attach_kprobe(event="nfs_file_open", fn_name="trace_file_open_entry")
 b.attach_kprobe(event="nfs_getattr", fn_name="trace_getattr_entry")
 
 b.attach_kretprobe(event="nfs_file_read", fn_name="trace_read_return")
 b.attach_kretprobe(event="nfs_file_write", fn_name="trace_write_return")
-b.attach_kretprobe(event="nfs4_file_open", fn_name="trace_file_open_return")
 b.attach_kretprobe(event="nfs_file_open", fn_name="trace_file_open_return")
 b.attach_kretprobe(event="nfs_getattr", fn_name="trace_getattr_return")
+
+if BPF.get_kprobe_functions(b'nfs4_file_open'):
+    b.attach_kprobe(event="nfs4_file_open", fn_name="trace_file_open_entry")
+    b.attach_kretprobe(event="nfs4_file_open", fn_name="trace_file_open_return")
 
 if not is_support_raw_tp:
     b.attach_kprobe(event="nfs_initiate_commit",
