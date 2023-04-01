@@ -63,6 +63,7 @@ Code:
 
 ```Python
 from bcc import BPF
+from bcc.utils import printb
 
 # define BPF program
 prog = """
@@ -85,7 +86,9 @@ while 1:
         (task, pid, cpu, flags, ts, msg) = b.trace_fields()
     except ValueError:
         continue
-    print("%-18.9f %-16s %-6d %s" % (ts, task, pid, msg))
+    except KeyboardInterrupt:
+        exit()
+    printb("%-18.9f %-16s %-6d %s" % (ts, task, pid, msg))
 ```
 
 This is similar to hello_world.py, and traces new processes via sys_clone() again, but has a few more things to learn:
@@ -116,6 +119,7 @@ This program is [examples/tracing/sync_timing.py](../examples/tracing/sync_timin
 ```Python
 from __future__ import print_function
 from bcc import BPF
+from bcc.utils import printb
 
 # load BPF program
 b = BPF(text="""
@@ -150,11 +154,14 @@ print("Tracing for quick sync's... Ctrl-C to end")
 # format output
 start = 0
 while 1:
-    (task, pid, cpu, flags, ts, ms) = b.trace_fields()
-    if start == 0:
-        start = ts
-    ts = ts - start
-    print("At time %.2f s: multiple syncs detected, last %s ms ago" % (ts, ms))
+    try:
+        (task, pid, cpu, flags, ts, ms) = b.trace_fields()
+        if start == 0:
+            start = ts
+        ts = ts - start
+        printb("At time %.2f s: multiple syncs detected, last %s ms ago" % (ts, ms))
+    except KeyboardInterrupt:
+        exit()
 ```
 
 Things to learn:
