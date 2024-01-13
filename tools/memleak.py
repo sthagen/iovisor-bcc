@@ -161,43 +161,40 @@ struct combined_alloc_info_t {
         u64 number_of_allocs;
 };
 
-BPF_HASH(sizes, u64);
+BPF_HASH(sizes, u32, u64);
 BPF_HASH(allocs, u64, struct alloc_info_t, 1000000);
-BPF_HASH(memptrs, u64, u64);
+BPF_HASH(memptrs, u32, u64);
 BPF_STACK_TRACE(stack_traces, 10240);
 BPF_HASH(combined_allocs, u64, struct combined_alloc_info_t, 10240);
 
 static inline void update_statistics_add(u64 stack_id, u64 sz) {
         struct combined_alloc_info_t *existing_cinfo;
-        struct combined_alloc_info_t cinfo = {0};
+        struct combined_alloc_info_t cinfo = {0, 0};
 
         existing_cinfo = combined_allocs.lookup(&stack_id);
-        if (existing_cinfo != 0)
-                cinfo = *existing_cinfo;
-
-        cinfo.total_size += sz;
-        cinfo.number_of_allocs += 1;
-
-        combined_allocs.update(&stack_id, &cinfo);
+        if (!existing_cinfo) {
+                combined_allocs.update(&stack_id, &cinfo);
+                existing_cinfo = combined_allocs.lookup(&stack_id);
+                if (!existing_cinfo)
+                        return;
+        }
+        __sync_fetch_and_add(&existing_cinfo->total_size, sz);
+        __sync_fetch_and_add(&existing_cinfo->number_of_allocs, 1);
 }
 
 static inline void update_statistics_del(u64 stack_id, u64 sz) {
         struct combined_alloc_info_t *existing_cinfo;
-        struct combined_alloc_info_t cinfo = {0};
 
         existing_cinfo = combined_allocs.lookup(&stack_id);
-        if (existing_cinfo != 0)
-                cinfo = *existing_cinfo;
+        if (!existing_cinfo)
+                return;
 
-        if (sz >= cinfo.total_size)
-                cinfo.total_size = 0;
-        else
-                cinfo.total_size -= sz;
-
-        if (cinfo.number_of_allocs > 0)
-                cinfo.number_of_allocs -= 1;
-
-        combined_allocs.update(&stack_id, &cinfo);
+        if (existing_cinfo->number_of_allocs > 1) {
+                __sync_fetch_and_sub(&existing_cinfo->total_size, sz);
+                __sync_fetch_and_sub(&existing_cinfo->number_of_allocs, 1);
+        } else {
+                combined_allocs.delete(&stack_id);
+        }
 }
 
 static inline int gen_alloc_enter(struct pt_regs *ctx, size_t size) {
@@ -208,9 +205,9 @@ static inline int gen_alloc_enter(struct pt_regs *ctx, size_t size) {
                         return 0;
         }
 
-        u64 pid = bpf_get_current_pid_tgid();
+        u32 tid = bpf_get_current_pid_tgid();
         u64 size64 = size;
-        sizes.update(&pid, &size64);
+        sizes.update(&tid, &size64);
 
         if (SHOULD_PRINT)
                 bpf_trace_printk("alloc entered, size = %u\\n", size);
@@ -218,15 +215,15 @@ static inline int gen_alloc_enter(struct pt_regs *ctx, size_t size) {
 }
 
 static inline int gen_alloc_exit2(struct pt_regs *ctx, u64 address) {
-        u64 pid = bpf_get_current_pid_tgid();
-        u64* size64 = sizes.lookup(&pid);
+        u32 tid = bpf_get_current_pid_tgid();
+        u64* size64 = sizes.lookup(&tid);
         struct alloc_info_t info = {0};
 
         if (size64 == 0)
                 return 0; // missed alloc entry
 
         info.size = *size64;
-        sizes.delete(&pid);
+        sizes.delete(&tid);
 
         if (address != 0) {
                 info.timestamp_ns = bpf_ktime_get_ns();
@@ -307,21 +304,21 @@ int munmap_enter(struct pt_regs *ctx, void *address) {
 int posix_memalign_enter(struct pt_regs *ctx, void **memptr, size_t alignment,
                          size_t size) {
         u64 memptr64 = (u64)(size_t)memptr;
-        u64 pid = bpf_get_current_pid_tgid();
+        u32 tid = bpf_get_current_pid_tgid();
 
-        memptrs.update(&pid, &memptr64);
+        memptrs.update(&tid, &memptr64);
         return gen_alloc_enter(ctx, size);
 }
 
 int posix_memalign_exit(struct pt_regs *ctx) {
-        u64 pid = bpf_get_current_pid_tgid();
-        u64 *memptr64 = memptrs.lookup(&pid);
+        u32 tid = bpf_get_current_pid_tgid();
+        u64 *memptr64 = memptrs.lookup(&tid);
         void *addr;
 
         if (memptr64 == 0)
                 return 0;
 
-        memptrs.delete(&pid);
+        memptrs.delete(&tid);
 
         if (bpf_probe_read_user(&addr, sizeof(void*), (void*)(size_t)*memptr64))
                 return 0;
