@@ -82,7 +82,7 @@ struct allocation_node {
 };
 
 struct allocation {
-	uint64_t stack_id;
+	int64_t stack_id;
 	size_t size;
 	size_t count;
 	struct allocation_node* allocations;
@@ -125,6 +125,17 @@ struct allocation {
 
 #define ATTACH_UPROBE_CHECKED(skel, sym_name, prog_name) __ATTACH_UPROBE_CHECKED(skel, sym_name, prog_name, false)
 #define ATTACH_URETPROBE_CHECKED(skel, sym_name, prog_name) __ATTACH_UPROBE_CHECKED(skel, sym_name, prog_name, true)
+
+/*
+ * -EFAULT in get_stackid normally means the stack-trace is not available,
+ * such as getting kernel stack trace in user mode
+ */
+#define STACK_ID_EFAULT(stack_id)	(stack_id == -EFAULT)
+
+#define STACK_ID_ERR(stack_id)		((stack_id < 0) && !STACK_ID_EFAULT(stack_id))
+
+/* hash collision (-EEXIST) suggests that stack map size may be too small */
+#define STACK_ID_COLLISION(stack_id)		(stack_id == -EEXIST)
 
 static void sig_handler(int signo);
 
@@ -281,7 +292,6 @@ int main(int argc, char *argv[])
 	printf("using page size: %ld\n", env.page_size);
 
 	env.kernel_trace = env.pid < 0 && !strlen(env.command);
-	printf("tracing kernel: %s\n", env.kernel_trace ? "true" : "false");
 
 	// if specific userspace program was specified,
 	// create the child process and use an eventfd to synchronize the call to exec()
@@ -365,6 +375,11 @@ int main(int argc, char *argv[])
 				env.perf_max_stack_depth * sizeof(unsigned long));
 	bpf_map__set_max_entries(skel->maps.stack_traces, env.stack_map_max_entries);
 
+	if (env.combined_only) {
+		bpf_map__set_max_entries(skel->maps.combined_allocs, COMBINED_ALLOCS_MAX_ENTRIES);
+		skel->rodata->combined_only = true;
+	}
+
 	// disable kernel tracepoints based on settings or availability
 	if (env.kernel_trace) {
 		if (!has_kernel_node_tracepoints())
@@ -389,12 +404,15 @@ int main(int argc, char *argv[])
 
 	// if userspace oriented, attach uprobes
 	if (!env.kernel_trace) {
+		printf("Attaching to pid %d, Ctrl+C to quit.\n", env.pid);
 		ret = attach_uprobes(skel);
 		if (ret) {
 			fprintf(stderr, "failed to attach uprobes\n");
 
 			goto cleanup;
 		}
+	} else {
+		printf("Attaching to kernel allocators, Ctrl+C to quit.\n");
 	}
 
 	ret = memleak_bpf__attach(skel);
@@ -445,8 +463,6 @@ int main(int argc, char *argv[])
 		print_stack_frames_func = print_stack_frames_by_syms_cache;
 	}
 #endif
-
-	printf("Tracing outstanding memory allocs...  Hit Ctrl-C to end\n");
 
 	// main loop
 	while (!exiting && env.nr_intervals) {
@@ -861,6 +877,8 @@ int print_outstanding_allocs(int allocs_fd, int stack_traces_fd)
 	struct tm *tm = localtime(&t);
 
 	size_t nr_allocs = 0;
+	size_t nr_missing_stacks = 0;
+	size_t nr_collision_stacks = 0;
 
 	// for each struct alloc_info "alloc_info" in the bpf map "allocs"
 	for (uint64_t prev_key = 0, curr_key = 0;; prev_key = curr_key) {
@@ -893,6 +911,10 @@ int print_outstanding_allocs(int allocs_fd, int stack_traces_fd)
 
 		// filter invalid stacks
 		if (alloc_info.stack_id < 0) {
+			/* handle stack id errors */
+			nr_missing_stacks += STACK_ID_ERR(alloc_info.stack_id);
+			nr_collision_stacks += STACK_ID_COLLISION(alloc_info.stack_id);
+
 			continue;
 		}
 
@@ -977,6 +999,13 @@ int print_outstanding_allocs(int allocs_fd, int stack_traces_fd)
 		}
 	}
 
+	if (nr_missing_stacks > 0) {
+		fprintf(stderr, "WARNING: %zu stack traces could not be displayed"
+			" due to memory shortage, including %zu caused by hash collisions."
+			" Consider increasing --stack-storage-size.\n",
+			nr_missing_stacks, nr_collision_stacks);
+	}
+
 	return 0;
 }
 
@@ -986,6 +1015,8 @@ int print_outstanding_combined_allocs(int combined_allocs_fd, int stack_traces_f
 	struct tm *tm = localtime(&t);
 
 	size_t nr_allocs = 0;
+	size_t nr_missing_stacks = 0;
+	size_t nr_collision_stacks = 0;
 
 	// for each stack_id "curr_key" and union combined_alloc_info "alloc"
 	// in bpf_map "combined_allocs"
@@ -1019,6 +1050,16 @@ int print_outstanding_combined_allocs(int combined_allocs_fd, int stack_traces_f
 			.allocations = NULL
 		};
 
+		// filter invalid stacks
+		if (alloc.stack_id < 0) {
+			/* handle stack id errors */
+			if (STACK_ID_ERR(alloc.stack_id))
+				nr_missing_stacks += alloc.count;
+			if (STACK_ID_COLLISION(alloc.stack_id))
+				nr_collision_stacks += alloc.count;
+			continue;
+		}
+
 		memcpy(&allocs[nr_allocs], &alloc, sizeof(alloc));
 		nr_allocs++;
 	}
@@ -1032,6 +1073,13 @@ int print_outstanding_combined_allocs(int combined_allocs_fd, int stack_traces_f
 			tm->tm_hour, tm->tm_min, tm->tm_sec, nr_allocs);
 
 	print_stack_frames(allocs, nr_allocs, stack_traces_fd);
+
+	if (nr_missing_stacks > 0) {
+		fprintf(stderr, "WARNING: %zu stack traces could not be displayed"
+			" due to memory shortage, including %zu caused by hash collisions."
+			" Consider increasing --stack-storage-size.\n",
+			nr_missing_stacks, nr_collision_stacks);
+	}
 
 	return 0;
 }
