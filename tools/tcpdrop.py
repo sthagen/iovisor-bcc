@@ -209,7 +209,7 @@ else:
 if args.pid_netns != 0:
     if args.netns_id != 0:
         print("ERROR: --pid_netns and --netns-id not allowed together")
-        exit()
+        exit(1)
     args.netns_id = os.stat('/proc/{}/ns/net'.format(args.pid_netns)).st_ino
 
 if args.netns_id != 0:
@@ -386,7 +386,7 @@ else:
     print("ERROR: tcp_drop() kernel function and tracepoint:skb:kfree_skb"
           " not found or traceable. "
           "The kernel might be too old or the the function has been inlined.")
-    exit()
+    exit(1)
 stack_traces = b.get_table("stack_traces")
 
 # header
